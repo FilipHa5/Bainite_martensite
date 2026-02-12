@@ -19,23 +19,26 @@ def evaluate_and_visualize_single_head(
 
     all_true = []
     all_pred = []
-    all_probs = []
+    all_dominant_probs = []
+    all_coords = []
     misclassified = []
-    coords = []
+    missed_coordinates = []
+    missed_probs = []
+    paths_of_missed_src_img  = []
+    eval_paths = []
 
     for batch in loader:
         rgb = batch["rgb"].to(device)
         labels = batch["label"].to(device)
         coords = batch["coords"].to(device) # x,y x+ps, y+ps
-        
-        coords.append(coords)
+        img_paths = batch["img_path"]
+        eval_paths.extend(img_paths)
 
+        
         lbp = batch.get("lbp", None)
         if lbp is not None:
-            lbp = (
-                [lbp.to(device, non_blocking=True) for lbp in batch["lbp"]]
-            )
-            logits = model(rgb, lbp)
+            lbp = lbp.to(device, non_blocking=True)
+            logits = model(rgb, lbp)  # allow lbp=None in model forward
         else:
             logits = model(rgb)
 
@@ -45,25 +48,32 @@ def evaluate_and_visualize_single_head(
         for i in range(rgb.size(0)):
             all_true.append(labels[i].item())
             all_pred.append(preds[i].item())
-            all_probs.append(probs[i].cpu().numpy())
+            all_dominant_probs.append(probs[i].cpu()[preds[i]].numpy())
+            all_coords.append(coords[i])
+            paths_of_missed_src_img.extend(img_paths[i])
 
             if preds[i] != labels[i] and len(misclassified) < max_show:
+                missed_coordinates.append(coords[i].cpu())
+                missed_probs_cpu = probs[i].cpu()[preds[i]].numpy()
+                missed_probs.append(missed_probs_cpu)
                 misclassified.append({
                     "image": rgb[i].cpu(),
+                    "img_path" : img_paths[i],
                     "true": labels[i].item(),
                     "pred": preds[i].item(),
-                    "prob": probs[i].cpu().numpy(),
-                    "coords": coords.numpy()
+                    "prob_pred": missed_probs_cpu,
+                    "coords": coords[i].cpu()
                     
                 })
 
     all_true = np.array(all_true)
     all_pred = np.array(all_pred)
-    all_probs = np.array(all_probs)
+    all_dominant_probs = np.array(all_dominant_probs)
 
     # =============================
     # Metrics
     # =============================
+    print(f"Evaluated on: {set(eval_paths)}")
     acc = 100.0 * (all_true == all_pred).mean()
 
     print("=" * 60)
@@ -92,7 +102,7 @@ def evaluate_and_visualize_single_head(
     )
 
     # Mean confidence
-    mean_conf = all_probs.max(axis=1).mean()
+    mean_conf = all_dominant_probs.mean()
     print(f"Mean confidence (max prob): {mean_conf:.4f}")
     print("=" * 60)
 
@@ -124,7 +134,7 @@ def evaluate_and_visualize_single_head(
         ax.set_title(
             f"True: {CLASS_NAMES[m['true']]}\n"
             f"Pred: {CLASS_NAMES[m['pred']]}\n"
-            f"Max p={m['prob'].max():.2f}",
+            f"Max p={m['prob_pred'].max():.2f}",
             fontsize=8
         )
         ax.axis("off")
@@ -132,4 +142,4 @@ def evaluate_and_visualize_single_head(
     plt.suptitle("Misclassified Validation Patches", fontsize=12)
     plt.tight_layout()
     plt.show()
-    return all_probs, coords
+    return misclassified, all_coords, all_dominant_probs

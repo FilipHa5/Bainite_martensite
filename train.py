@@ -14,7 +14,7 @@ def train(model, optimizer, criterion, train_loader, device, num_epochs = 10):
         for batch in pbar:
             images_rgb = batch["rgb"].to(device, non_blocking=True)
             images_lbp = (
-                [lbp.to(device, non_blocking=True) for lbp in batch["lbp"]]
+                batch["lbp"].to(device, non_blocking=True)
                 if batch["lbp"] is not None
                 else None
             )
@@ -72,12 +72,9 @@ def train_single_val(
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", leave=False)
         for batch in pbar:
+            # print(batch["rgb"].shape, batch["lbp"].shape)
             images_rgb = batch["rgb"].to(device, non_blocking=True)
-            images_lbp = (
-                [lbp.to(device, non_blocking=True) for lbp in batch["lbp"]]
-                if batch["lbp"] is not None
-                else None
-            )
+            images_lbp = batch["lbp"].to(device, non_blocking=True) if batch["lbp"] is not None else None
             labels = batch["label"].to(device, non_blocking=True)
 
             optimizer.zero_grad()
@@ -110,11 +107,7 @@ def train_single_val(
         with torch.no_grad():
             for batch in val_loader:
                 images_rgb = batch["rgb"].to(device, non_blocking=True)
-                images_lbp = (
-                    [lbp.to(device, non_blocking=True) for lbp in batch["lbp"]]
-                    if batch["lbp"] is not None
-                    else None
-                )
+                images_lbp = batch["lbp"].to(device, non_blocking=True) if batch["lbp"] is not None else None
                 labels = batch["label"].to(device, non_blocking=True)
 
                 outputs = model(images_rgb, images_lbp)

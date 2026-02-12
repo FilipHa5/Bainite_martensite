@@ -7,6 +7,10 @@ from pathlib import Path
 from dataset import MicrostructurePatchDataset
 
 LABEL_MAP = {
+    "dq_full": {
+        "family": 1,        # lath-type (M ± LB)
+        "deformation": -1   # not applicable
+    },
     "dq_hollow": {
         "family": 1,        # lath-type (M ± LB)
         "deformation": -1   # not applicable
@@ -22,21 +26,34 @@ LABEL_MAP = {
 }
 
 
-def collect_samples(data_root):
-    samples = []
+def collect_img_paths_with_labels(data_root):
+    img_paths_label = []
+    classes = set()
 
     for cls in LABEL_MAP.keys():
         cls_dir = Path(data_root) / cls
         for img_path in cls_dir.glob("*.*"):
-            
-            samples.append((img_path, LABEL_MAP[cls]))
+            img_paths_label.append((img_path, LABEL_MAP[cls]["family"]))
 
-    return samples
+    print(f"Collected {len(img_paths_label)} img_paths_label from {len(LABEL_MAP)} classes.")
+
+    return img_paths_label
+
+def extract_patches(img, patch_size=128, stride=64):
+    patches = []
+    h, w = img.shape[:2]
+
+    for y in range(0, h - patch_size + 1, stride):
+        for x in range(0, w - patch_size + 1, stride):
+            patch = img[y:y+patch_size, x:x+patch_size]
+            patches.append(patch)
+
+    return patches
 
 def make_train_val_test_loaders(
     data_root,
     batch_size=128,
-    patch_size=256,
+    patch_size=128,
     stride=64,
     lbp_settings=[(1, 8), (3, 16)],
     val_frac=0.15,
@@ -44,10 +61,12 @@ def make_train_val_test_loaders(
     num_workers=0, # Windows Jupyter safe - multiprocessing issue
     random_state=42
 ):
-    samples = collect_samples(data_root)
+    img_paths_label = collect_img_paths_with_labels(data_root)
+
+    print(f"Collected {len(img_paths_label)} images")
 
     # Stratify by family (0=UB, 1=Lath-type)
-    y_family = np.array([s[1] for s in samples])
+    y_family = np.array([s[1] for s in img_paths_label])
 
     # -----------------------
     # Split off TEST set
@@ -58,10 +77,10 @@ def make_train_val_test_loaders(
         random_state=random_state
     )
 
-    trainval_idx, test_idx = next(sss_test.split(samples, y_family))
+    trainval_idx, test_idx = next(sss_test.split(img_paths_label, y_family))
 
-    trainval_samples = [samples[i] for i in trainval_idx]
-    test_samples     = [samples[i] for i in test_idx]
+    trainval_samples = [img_paths_label[i] for i in trainval_idx]
+    test_samples     = [img_paths_label[i] for i in test_idx]
 
     y_trainval = y_family[trainval_idx]
 
@@ -141,6 +160,10 @@ def make_train_val_test_loaders(
         prefetch_factor=4 if num_workers > 0 else None
     )
 
+
+    print("Train family distribution:", np.bincount(y_family[train_idx]))
+    print("Val family distribution:", np.bincount(y_family[val_idx]))
+    print("Test family distribution:", np.bincount(y_family[test_idx]))
     return train_loader, val_loader, test_loader
 
 
@@ -152,14 +175,14 @@ def make_cv_loaders(
     stride=64,
     lbp_settings=[(1, 8), (3, 16)]
 ):
-    samples = collect_samples(data_root)
+    img_paths_label = collect_img_paths_with_labels(data_root)
     # Stratify by family (0=UB, 1=Lath-type) so each fold has both classes
-    y_family = np.array([s[1] for s in samples])
+    y_family = np.array([s[1] for s in img_paths_label])
     kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
 
-    for fold, (train_idx, val_idx) in enumerate(kf.split(samples, y_family)):
-        train_samples = [samples[i] for i in train_idx]
-        val_samples   = [samples[i] for i in val_idx]
+    for fold, (train_idx, val_idx) in enumerate(kf.split(img_paths_label, y_family)):
+        train_samples = [img_paths_label[i] for i in train_idx]
+        val_samples   = [img_paths_label[i] for i in val_idx]
 
         train_ds = MicrostructurePatchDataset(
             train_samples,

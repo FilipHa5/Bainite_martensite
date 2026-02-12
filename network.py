@@ -9,7 +9,7 @@ class MicrostructureNet(nn.Module):
         """
         super().__init__()
         self.lbp_settings = lbp_settings
-        self.len_lbp_config = len(lbp_settings)
+        self.len_lbp_config = len(lbp_settings) if lbp_settings is not None else 0
 
         # ---------------- Backbone ----------------
         backbone = models.resnet18(weights=None)
@@ -53,8 +53,7 @@ class MicrostructureNet(nn.Module):
                 raise ValueError("LBP input required when len_lbp_config > 0")
 
             # If LBP is a list of tensors, concatenate along channel dim
-            if isinstance(lbp, list):
-                lbp = torch.cat(lbp, dim=1)
+            # lbp = torch.cat(lbp, dim=1)
 
             x_lbp = self.lbp_branch(lbp).flatten(1)
             x = torch.cat([x_rgb, x_lbp], dim=1)
