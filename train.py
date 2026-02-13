@@ -74,7 +74,7 @@ def train_single_val(
         for batch in pbar:
             # print(batch["rgb"].shape, batch["lbp"].shape)
             images_rgb = batch["rgb"].to(device, non_blocking=True)
-            images_lbp = batch["lbp"].to(device, non_blocking=True) if batch["lbp"] is not None else None
+            images_lbp = batch["lbp"].to(device, non_blocking=True) if isinstance(batch["lbp"], torch.Tensor) else None
             labels = batch["label"].to(device, non_blocking=True)
 
             optimizer.zero_grad()

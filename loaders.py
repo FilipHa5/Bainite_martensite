@@ -26,6 +26,32 @@ LABEL_MAP = {
 }
 
 
+def custom_collate(batch):
+    rgb = torch.stack([b["rgb"] for b in batch], dim=0)
+
+    labels = torch.stack([b["label"] for b in batch], dim=0)
+    coords = torch.stack([b["coords"] for b in batch], dim=0)
+
+    img_paths = [b["img_path"] for b in batch]  # keep as list of strings
+
+    lbp_list = [b["lbp"] for b in batch]
+
+    # If ANY sample has None → whole batch LBP = None
+    if any(l is None for l in lbp_list):
+        lbp = None
+    else:
+        lbp = torch.stack(lbp_list, dim=0)
+
+    return {
+        "rgb": rgb,
+        "lbp": lbp,
+        "label": labels,
+        "img_path": img_paths,
+        "coords": coords,
+    }
+
+
+
 def collect_img_paths_with_labels(data_root):
     img_paths_label = []
     classes = set()
@@ -116,7 +142,7 @@ def make_train_val_test_loaders(
         patch_size=patch_size,
         stride=stride,
         augment=False,
-        lbp_settings=lbp_settings
+        lbp_settings=lbp_settings,
     )
 
     test_ds = MicrostructurePatchDataset(
@@ -137,7 +163,8 @@ def make_train_val_test_loaders(
         num_workers=num_workers,
         pin_memory=(num_workers == 0),
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None
+        prefetch_factor=4 if num_workers > 0 else None,
+        collate_fn=custom_collate
     )
 
     val_loader = torch.utils.data.DataLoader(
@@ -147,7 +174,9 @@ def make_train_val_test_loaders(
         num_workers=num_workers,
         pin_memory=(num_workers == 0),
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None
+        prefetch_factor=4 if num_workers > 0 else None,
+        collate_fn=custom_collate
+        
     )
 
     test_loader = torch.utils.data.DataLoader(
@@ -157,7 +186,9 @@ def make_train_val_test_loaders(
         num_workers=num_workers,
         pin_memory=(num_workers == 0),
         persistent_workers=num_workers > 0,
-        prefetch_factor=4 if num_workers > 0 else None
+        prefetch_factor=4 if num_workers > 0 else None,
+        collate_fn=custom_collate
+        
     )
 
 

@@ -27,12 +27,6 @@ class MicrostructurePatchDataset(Dataset):
         self.image_cache = {}
         self.lbp_cache = {}  # {img_path: { (P,R): lbp_full }}
 
-        # self.transform = transforms.Compose([
-        #     transforms.RandomHorizontalFlip() if augment else transforms.Lambda(lambda x: x),
-        #     transforms.RandomVerticalFlip() if augment else transforms.Lambda(lambda x: x),
-        #     transforms.ToTensor()
-        # ])
-
         for img_path, label in samples:
             gray = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
             if gray is None:
@@ -114,7 +108,7 @@ class MicrostructurePatchDataset(Dataset):
             )  # (N_lbp, H, W)
             
         else:
-            lbp = []
+            lbp = None
 
         return {
             "rgb": rgb,
@@ -126,26 +120,3 @@ class MicrostructurePatchDataset(Dataset):
                 dtype=torch.int32
             )
         }
-        def _augment(self, rgb, lbp_list):
-            # rgb: (H, W, 3) numpy
-            # lbp_list: list of (H, W) numpy arrays or None
-
-            if not self.augment:
-                return rgb, lbp_list
-
-            # sample once
-            do_hflip = np.random.rand() < 0.5
-            do_vflip = np.random.rand() < 0.5
-
-            if do_hflip:
-                rgb = np.flip(rgb, axis=1)
-                if lbp_list is not None:
-                    lbp_list = [np.flip(l, axis=1) for l in lbp_list]
-
-            if do_vflip:
-                rgb = np.flip(rgb, axis=0)
-                if lbp_list is not None:
-                    lbp_list = [np.flip(l, axis=0) for l in lbp_list]
-
-            return rgb, lbp_list
-
