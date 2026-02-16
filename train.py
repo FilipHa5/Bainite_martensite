@@ -179,3 +179,53 @@ def train_single_val(
         plt.show()
 
     return model, history
+
+def cross_validate(
+    model_class,
+    dataset,
+    param_config,
+    device,
+    num_epochs=20,
+    batch_size=32,
+    n_splits=5
+):
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=42)
+    fold_scores = []
+
+    for fold, (train_idx, val_idx) in enumerate(kf.split(dataset)):
+        print(f"\n===== Fold {fold+1}/{n_splits} =====")
+
+        train_subset = Subset(dataset, train_idx)
+        val_subset = Subset(dataset, val_idx)
+
+        train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
+        val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+
+        # Create NEW model each fold
+        model = model_class(**param_config["model_params"]).to(device)
+
+        optimizer = param_config["optimizer"](
+            model.parameters(),
+            **param_config["optimizer_params"]
+        )
+
+        criterion = param_config["criterion"]
+
+        model, history = train_single_val(
+            model,
+            optimizer,
+            criterion,
+            train_loader,
+            val_loader,
+            device,
+            num_epochs=num_epochs,
+            plot=False
+        )
+
+        best_val_acc = max(history["val_acc"])
+        fold_scores.append(best_val_acc)
+
+    mean_score = np.mean(fold_scores)
+    print(f"\nMean CV Accuracy: {mean_score:.2f}%")
+
+    return mean_score

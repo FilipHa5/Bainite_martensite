@@ -2,79 +2,10 @@ import numpy as np
 import torch
 from sklearn.model_selection import StratifiedShuffleSplit
 from sklearn.model_selection import StratifiedKFold
-from pathlib import Path
 
-from dataset import MicrostructurePatchDataset
-
-LABEL_MAP = {
-    "dq_full": {
-        "family": 1,        # lath-type (M ± LB)
-        "deformation": -1   # not applicable
-    },
-    "dq_hollow": {
-        "family": 1,        # lath-type (M ± LB)
-        "deformation": -1   # not applicable
-    },
-    "iso": {
-        "family": 0,        # upper bainite
-        "deformation": 0    # non-deformed
-    },
-    "iso_deform": {
-        "family": 0,        # upper bainite
-        "deformation": 1    # deformed
-    }
-}
-
-
-def custom_collate(batch):
-    rgb = torch.stack([b["rgb"] for b in batch], dim=0)
-
-    labels = torch.stack([b["label"] for b in batch], dim=0)
-    coords = torch.stack([b["coords"] for b in batch], dim=0)
-
-    img_paths = [b["img_path"] for b in batch]  # keep as list of strings
-
-    lbp_list = [b["lbp"] for b in batch]
-
-    # If ANY sample has None → whole batch LBP = None
-    if any(l is None for l in lbp_list):
-        lbp = None
-    else:
-        lbp = torch.stack(lbp_list, dim=0)
-
-    return {
-        "rgb": rgb,
-        "lbp": lbp,
-        "label": labels,
-        "img_path": img_paths,
-        "coords": coords,
-    }
-
-
-
-def collect_img_paths_with_labels(data_root):
-    img_paths_label = []
-    classes = set()
-
-    for cls in LABEL_MAP.keys():
-        cls_dir = Path(data_root) / cls
-        for img_path in cls_dir.glob("*.*"):
-            img_paths_label.append((img_path, LABEL_MAP[cls]["family"]))
-
-    print(f"Collected {len(img_paths_label)} img_paths_label from {len(LABEL_MAP)} classes.")
-
-    return img_paths_label
-
-def extract_patches(img, patch_size=128, stride=64):
-    patches = []
-    h, w = img.shape[:2]
-
-    for y in range(0, h - patch_size + 1, stride):
-        for x in range(0, w - patch_size + 1, stride):
-            patch = img[y:y+patch_size, x:x+patch_size]
-            patches.append(patch)
-
-    return patches
+from datasets import MicrostructurePatchDataset
+from .img_utils import collect_img_paths_with_labels
+from .collate import custom_collate
 
 def make_train_val_test_loaders(
     data_root,
