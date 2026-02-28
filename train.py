@@ -37,7 +37,6 @@ def train(model, optimizer, criterion, train_loader, device, num_epochs = 10):
         epoch_acc = 100.0 * correct / total
         print(f"Epoch {epoch+1}/{num_epochs}  Loss: {epoch_loss:.4f}  Accuracy: {epoch_acc:.2f}%")
 
-
 def train_single_val(
     model,
     optimizer,
@@ -179,6 +178,45 @@ def train_single_val(
         plt.show()
 
     return model, history
+
+def train_full(
+    model,
+    optimizer,
+    criterion,
+    train_loader,
+    device,
+    num_epochs=10,
+):
+    model.train()
+
+    for epoch in range(num_epochs):
+        running_loss = 0.0
+        correct = 0
+        total = 0
+
+        for batch in train_loader:
+            images_rgb = batch["rgb"].to(device)
+            images_lbp = batch["lbp"].to(device) if isinstance(batch["lbp"], torch.Tensor) else None
+            labels = batch["label"].to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images_rgb, images_lbp)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item() * images_rgb.size(0)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += images_rgb.size(0)
+
+        train_loss = running_loss / total
+        train_acc = 100.0 * correct / total
+
+        print(f"Epoch {epoch+1}/{num_epochs} | "
+              f"Loss: {train_loss:.4f}, Acc: {train_acc:.2f}%")
+
+    return model
 
 def cross_validate(
     model_class,

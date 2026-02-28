@@ -48,12 +48,36 @@ class MicrostructurePatchDataset(Dataset):
                     ).astype(np.float32)
                     lbp /= (P + 2)  # normalization
                     self.lbp_cache[img_path][(P,R)] = lbp
+                    
+            exclude_w = 309
+            exclude_h = 122
+            
+            ex_x0 = w - exclude_w
+            ex_y0 = h - exclude_h
+            ex_x1 = w
+            ex_y1 = h
 
             for y in range(0, h - patch_size + 1, stride):
                 for x in range(0, w - patch_size + 1, stride):
-                    # Only keep full-size patches
-                    if y + patch_size <= h and x + patch_size <= w:
-                        self.items.append((img_path, y, x, label))
+
+                    x2 = x + patch_size
+                    y2 = y + patch_size
+
+                    # safety (already ensured by range, but kept explicit)
+                    if x2 > w or y2 > h:
+                        continue
+
+                    # -----------------------
+                    # EXCLUDE bottom-right region
+                    # check rectangle overlap
+                    # -----------------------
+                    overlap_x = not (x2 <= ex_x0 or x >= ex_x1)
+                    overlap_y = not (y2 <= ex_y0 or y >= ex_y1)
+
+                    if overlap_x and overlap_y:
+                        continue  # skip patches touching excluded area
+
+                    self.items.append((img_path, y, x, label))
 
     def __len__(self):
         return len(self.items)

@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from collections import defaultdict
+from models import normalized_histogram
 from PIL import Image
 import os
 import numpy as np
@@ -60,6 +61,11 @@ def evaluate_and_visualize_single_head(
                     "coords": coords[i].cpu().tolist()
                 })
 
+    # ---- Compute accuracy ----
+    all_true_np = np.array(all_true)
+    all_pred_np = np.array(all_pred)
+    test_accuracy = (all_true_np == all_pred_np).mean()
+    
     # Generate classification report
     report = classification_report(
         all_true,
@@ -80,11 +86,15 @@ def evaluate_and_visualize_single_head(
         all_true,
         all_prob_vectors,
         report,
-        conf_matrix
+        conf_matrix,
+        test_accuracy
     )
 
+def perform_all_patches_corrections(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
+    for coords, prob, img_path, pred, true in zip(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
+        print(prob)
 
-def plot_misclassified(results_path, misclassified_list):
+def plot_misclassified(results_path, misclassified_list, clf):
     """"
     Plot misclassified patches on original images with a separate spatial heatmap
     of confidence scores using Inferno colormap and color scale.
@@ -97,6 +107,8 @@ def plot_misclassified(results_path, misclassified_list):
         - "prob_pred": confidence score (0-1)
     """
 
+    n_bins = clf.bins_used
+
     # Group patches by image
     img_to_patches = defaultdict(list)
     for item in misclassified_list:
@@ -108,7 +120,8 @@ def plot_misclassified(results_path, misclassified_list):
         H, W, _ = img.shape
 
         # Create figure with 2 subplots: image and heatmap
-        fig, (ax_img, ax_heat) = plt.subplots(1, 2, figsize=(16, 8))
+        # fig, (ax_img, ax_heat) = plt.subplots(1, 2, figsize=(16, 8))
+        fig, ax_img = plt.subplots(1, 1, figsize=(8, 8))
 
         # --- Plot original image with rectangles ---
         ax_img.imshow(img)
@@ -116,6 +129,20 @@ def plot_misclassified(results_path, misclassified_list):
         ax_img.set_title(f"Misclassified Patches - {item["img_path"]}")
 
         for item in patches_list:
+            rgb_hist = normalized_histogram(item["image"], bins=n_bins)
+            if "lbp" in item and item["lbp"] is not None:
+                lbp_hist = normalized_histogram(item["lbp"], bins=n_bins)
+            else:
+                lbp_hist = np.zeros(n_bins, dtype=np.float32)
+
+            features = np.concatenate([rgb_hist, lbp_hist])
+
+            clf_pred = clf.predict(features.reshape(1, -1))
+            print(f"DT Prediction: {clf_pred}, NN Prediction: {item['pred']}, True: {item['true']}")
+            if clf_pred == item['true'] and item['pred'] != item['true']:
+                print("DT got it right, but NN not")
+            if clf_pred != item['true'] and item['pred'] != item['true']:
+                print("Thats a ahrd one, both algs made a msitake")
             x1, y1, x2, y2 = map(int, item["coords"])
             width = x2 - x1
             height = y2 - y1

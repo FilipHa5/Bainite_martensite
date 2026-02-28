@@ -1,1 +1,2 @@
 from .microstructure_net import MicrostructureNet
+from .dt_classifier import train_dt_model, normalized_histogram
