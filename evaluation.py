@@ -15,7 +15,10 @@ def evaluate_and_visualize_single_head(
     loader,
     device,
     max_show=16,
-    class_names=None  # optional list of class names
+    class_names=None,  # optional list of class names,
+    secondary_model=None,
+    min_confidence_threshold=None,
+    n_bins=16
 ):
     model.eval()
 
@@ -29,12 +32,13 @@ def evaluate_and_visualize_single_head(
 
     for batch in loader:
         rgb = batch["rgb"].to(device)
+        lbp=batch["lbp"].to(device)
         labels = batch["label"].to(device)
         coords = batch["coords"].to(device)
         img_paths = batch["img_path"]
 
-        lbp = batch.get("lbp", None)
-        if lbp is not None:
+        lbp_enabled = batch.get("lbp", None)
+        if lbp_enabled is not None:
             lbp = lbp.to(device, non_blocking=True)
             logits = model(rgb, lbp)
         else:
@@ -51,6 +55,24 @@ def evaluate_and_visualize_single_head(
             all_prob_vectors.append(probs[i].cpu().numpy())
             all_eval_paths.append(img_paths[i])
 
+            if secondary_model:
+                if probs[i][preds[i]].item() < min_confidence_threshold:
+                    rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
+                    if lbp_enabled:
+                        lbp_hist = normalized_histogram(lbp.cpu(), bins=n_bins)
+                    else:
+                        lbp_hist = np.zeros(n_bins, dtype=np.float32)
+
+                    features = np.concatenate([rgb_hist, lbp_hist])
+
+                    pred_dt = secondary_model.predict(features.reshape(1,-1))
+                    print("Confidence:", probs[i][preds[i]].item(), sep="")
+                    if pred_dt != labels[i]:
+                        print("DT Fucked up")
+                    else:
+                        print("DT worked well.")
+                        
+    
             if preds[i] != labels[i] and len(misclassified) < max_show:
                 misclassified.append({
                     "image": rgb[i].cpu(),

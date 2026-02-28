@@ -165,7 +165,7 @@ def make_train_val_test_loaders(
 
 
 def make_loader_from_samples(
-    samples, patch_size, stride, augment, lbp_settings, batch_size=128, num_workers=1, shuffle=True
+    samples, patch_size, stride, augment, lbp_settings, batch_size=128, num_workers=1, shuffle=True #co tu sie dzieje
 ):
     ds = MicrostructurePatchDataset(
         samples,
