@@ -8,9 +8,11 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 import torch
 from sklearn.metrics import classification_report, confusion_matrix
+import pandas as pd
 
 @torch.no_grad()
 def evaluate_and_visualize_single_head(
+    result_path
     model,
     loader,
     device,
@@ -18,7 +20,7 @@ def evaluate_and_visualize_single_head(
     class_names=None,  # optional list of class names,
     secondary_model=None,
     min_confidence_threshold=None,
-    n_bins=16
+    n_bins=16,
 ):
     model.eval()
 
@@ -29,17 +31,21 @@ def evaluate_and_visualize_single_head(
     all_prob_vectors = []
     misclassified = []
     all_eval_paths = []
+    hybrid_pred=[]
+    secondary_pred_correct_ctr=0
+    secondary_pred_missed_ctr=0
+    total_hybrid_correct=0
 
     for batch in loader:
         rgb = batch["rgb"].to(device)
-        lbp=batch["lbp"].to(device)
+        # lbp=batch["lbp"].to(device)
         labels = batch["label"].to(device)
         coords = batch["coords"].to(device)
         img_paths = batch["img_path"]
 
         lbp_enabled = batch.get("lbp", None)
         if lbp_enabled is not None:
-            lbp = lbp.to(device, non_blocking=True)
+            lbp = batch["lbp"].to(device, non_blocking=True)
             logits = model(rgb, lbp)
         else:
             logits = model(rgb)
@@ -58,7 +64,7 @@ def evaluate_and_visualize_single_head(
             if secondary_model:
                 if probs[i][preds[i]].item() < min_confidence_threshold:
                     rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
-                    if lbp_enabled:
+                    if lbp_enabled is not None:
                         lbp_hist = normalized_histogram(lbp.cpu(), bins=n_bins)
                     else:
                         lbp_hist = np.zeros(n_bins, dtype=np.float32)
@@ -66,13 +72,19 @@ def evaluate_and_visualize_single_head(
                     features = np.concatenate([rgb_hist, lbp_hist])
 
                     pred_dt = secondary_model.predict(features.reshape(1,-1))
-                    print("Confidence:", probs[i][preds[i]].item(), sep="")
-                    if pred_dt != labels[i]:
-                        print("DT Fucked up")
+                    hybrid_pred.append(pred_dt[0])
+                    print(f"Confidence: {probs[i][preds[i]].item()}", end=";")
+                    if pred_dt[0] != labels[i].item():
+                        secondary_pred_missed_ctr+=1
+                        print(f"DT Fucked up. Pred: {pred_dt[0]}, true: {labels[i].item()}")
                     else:
-                        print("DT worked well.")
+                        secondary_pred_correct_ctr+=1
+                        total_hybrid_correct+=1
+                        print(f"DT worked well. Pred: {pred_dt[0]}, true: {labels[i].item()}")
                         
-    
+                else:
+                    hybrid_pred.append(preds[i].item())
+                    
             if preds[i] != labels[i] and len(misclassified) < max_show:
                 misclassified.append({
                     "image": rgb[i].cpu(),
@@ -86,18 +98,72 @@ def evaluate_and_visualize_single_head(
     # ---- Compute accuracy ----
     all_true_np = np.array(all_true)
     all_pred_np = np.array(all_pred)
+    hybrid_pred_np = np.array(hybrid_pred)
     test_accuracy = (all_true_np == all_pred_np).mean()
+    
+    hybrid_accuracy = (all_true_np == hybrid_pred_np).mean()
     
     # Generate classification report
     report = classification_report(
         all_true,
-        all_pred,
+        hybrid_pred_np,
         target_names=class_names,
         digits=4,
-        zero_division=0
+        zero_division=0,
+        output_dict=True
     )
 
-    conf_matrix = confusion_matrix(all_true, all_pred)
+    report_df = pd.DataFrame(report_dict).transpose()
+    with open(os.path.join(result_path, "classification_report.txt"), "w") as f:
+        f.write(report_df.to_string(float_format="%.4f"))
+    report_df.to_csv(os.path.join(result_path, "classification_report.csv"), float_format="%.4f")
+
+    conf_matrix = confusion_matrix(all_true, hybrid_pred_np)
+    np.save(os.path.join(result_path, "confusion_matrix.npy"), conf_matrix)
+    cm_df = pd.DataFrame(conf_matrix, index=class_names, columns=class_names)
+    cm_df.to_csv(os.path.join(result_path, "confusion_matrix.csv"))
+
+    cm_normalized = conf_matrix.astype(float) / conf_matrix.sum(axis=1)[:, np.newaxis]
+
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    sns.heatmap(
+        cm_normalized,
+        annot=True,
+        fmt=".3f",
+        cmap="Greys",
+        cbar=True,
+        square=True,
+        linewidths=0.8,
+        linecolor="black",
+        xticklabels=class_names,
+        yticklabels=class_names,
+        ax=ax
+    )
+
+    ax.set_xlabel("Predicted Label", labelpad=10)
+    ax.set_ylabel("True Label", labelpad=10)
+    ax.set_title("Normalized Confusion Matrix", pad=15)
+
+    # Improve tick formatting
+    plt.xticks(rotation=45, ha="right")
+    plt.yticks(rotation=0)
+
+    # Remove unnecessary spines
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(result_path,"confusion_matrix_plot.pdf"), dpi=600, bbox_inches="tight")
+    plt.savefig(os.path.join(result_path,"confusion_matrix_plot.png"), dpi=600, bbox_inches="tight")
+
+    plt.close()
 
     return (
         misclassified,
@@ -109,14 +175,139 @@ def evaluate_and_visualize_single_head(
         all_prob_vectors,
         report,
         conf_matrix,
-        test_accuracy
+        test_accuracy,
+        hybrid_accuracy
     )
 
 def perform_all_patches_corrections(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
     for coords, prob, img_path, pred, true in zip(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
         print(prob)
 
-def plot_misclassified(results_path, misclassified_list, clf):
+def build_heatmap(H, W, patches_list, sigma=2):
+    """
+    Build normalized heatmap from patch confidence scores.
+    Handles overlapping regions properly.
+    """
+    heatmap = np.zeros((H, W), dtype=float)
+    countmap = np.zeros((H, W), dtype=float)
+
+    for item in patches_list:
+        x1, y1, x2, y2 = map(int, item["coords"])
+        prob = float(item["prob_pred"])
+
+        heatmap[y1:y2, x1:x2] += prob
+        countmap[y1:y2, x1:x2] += 1
+
+    # Normalize overlaps
+    mask = countmap > 0
+    heatmap[mask] /= countmap[mask]
+
+    # Optional smoothing
+    if sigma > 0:
+        heatmap = gaussian_filter(heatmap, sigma=sigma)
+
+    return heatmap
+def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.5):
+
+    img_to_patches = defaultdict(list)
+    for item in misclassified_list:
+        img_to_patches[item["img_path"]].append(item)
+
+    for img_path, patches_list in img_to_patches.items():
+
+        img = np.array(Image.open(img_path).convert("RGB"))
+        H, W, _ = img.shape
+        heatmap = build_heatmap(H, W, patches_list, sigma=sigma)
+
+        base = os.path.splitext(os.path.basename(img_path))[0]
+
+        # =====================================================
+        # 1️⃣ COMBINED (image + heatmap + boxes)
+        # =====================================================
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img)
+
+        im = ax.imshow(
+            heatmap,
+            cmap="inferno",
+            alpha=alpha,
+            origin="upper",
+            vmin=0,
+            vmax=1
+        )
+
+        for item in patches_list:
+            x1, y1, x2, y2 = map(int, item["coords"])
+            rect = patches.Rectangle(
+                (x1, y1),
+                x2 - x1,
+                y2 - y1,
+                linewidth=2,
+                edgecolor='cyan',
+                facecolor='none'
+            )
+            ax.add_patch(rect)
+
+        ax.axis("off")
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Confidence Score")
+
+        combined_path = os.path.join(
+            results_path, f"combined_{base}.png"
+        )
+        plt.savefig(combined_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        # =====================================================
+        # 2️⃣ IMAGE + BOXES ONLY
+        # =====================================================
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(img)
+
+        for item in patches_list:
+            x1, y1, x2, y2 = map(int, item["coords"])
+            rect = patches.Rectangle(
+                (x1, y1),
+                x2 - x1,
+                y2 - y1,
+                linewidth=2,
+                edgecolor='red',
+                facecolor='none'
+            )
+            ax.add_patch(rect)
+
+        ax.axis("off")
+
+        boxes_path = os.path.join(
+            results_path, f"boxes_{base}.png"
+        )
+        plt.savefig(boxes_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+        # =====================================================
+        # 3️⃣ HEATMAP ONLY
+        # =====================================================
+        fig, ax = plt.subplots(figsize=(8, 8))
+        im = ax.imshow(
+            heatmap,
+            cmap="inferno",
+            origin="upper",
+            vmin=0,
+            vmax=1
+        )
+        ax.axis("off")
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Confidence Score")
+
+        heatmap_path = os.path.join(
+            results_path, f"heatmap_{base}.png"
+        )
+        plt.savefig(heatmap_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+
+    print(f"Saved {len(img_to_patches)} images (combined + boxes + heatmap).")
+
+def plot_misclassified(results_path, misclassified_list):
     """"
     Plot misclassified patches on original images with a separate spatial heatmap
     of confidence scores using Inferno colormap and color scale.
@@ -129,7 +320,7 @@ def plot_misclassified(results_path, misclassified_list, clf):
         - "prob_pred": confidence score (0-1)
     """
 
-    n_bins = clf.bins_used
+    # n_bins = clf.bins_used
 
     # Group patches by image
     img_to_patches = defaultdict(list)
@@ -151,20 +342,19 @@ def plot_misclassified(results_path, misclassified_list, clf):
         ax_img.set_title(f"Misclassified Patches - {item["img_path"]}")
 
         for item in patches_list:
-            rgb_hist = normalized_histogram(item["image"], bins=n_bins)
-            if "lbp" in item and item["lbp"] is not None:
-                lbp_hist = normalized_histogram(item["lbp"], bins=n_bins)
-            else:
-                lbp_hist = np.zeros(n_bins, dtype=np.float32)
+            # rgb_hist = normalized_histogram(item["image"], bins=n_bins)
+            # if "lbp" in item and item["lbp"] is not None:
+            #     lbp_hist = normalized_histogram(item["lbp"], bins=n_bins)
+            # else:
+            #     lbp_hist = np.zeros(n_bins, dtype=np.float32)
 
-            features = np.concatenate([rgb_hist, lbp_hist])
-
-            clf_pred = clf.predict(features.reshape(1, -1))
-            print(f"DT Prediction: {clf_pred}, NN Prediction: {item['pred']}, True: {item['true']}")
-            if clf_pred == item['true'] and item['pred'] != item['true']:
-                print("DT got it right, but NN not")
-            if clf_pred != item['true'] and item['pred'] != item['true']:
-                print("Thats a ahrd one, both algs made a msitake")
+            # features = np.concatenate([rgb_hist, lbp_hist])
+            # clf_pred = clf.predict(features.reshape(1, -1))
+            # print(f"DT Prediction: {clf_pred}, NN Prediction: {item['pred']}, True: {item['true']}")
+            # if clf_pred == item['true'] and item['pred'] != item['true']:
+            #     print("DT got it right, but NN not")
+            # if clf_pred != item['true'] and item['pred'] != item['true']:
+            #     print("Thats a ahrd one, both algs made a msitake")
             x1, y1, x2, y2 = map(int, item["coords"])
             width = x2 - x1
             height = y2 - y1

@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 from torchvision import models
-from torchvision.models import ResNet50_Weights
+from torchvision.models import ResNet50_Weights, DenseNet201_Weights
 
-class MicrostructureNet(nn.Module):
+class MicrostructureDenseNet(nn.Module):
     def __init__(self, lbp_settings=None, freeze_backbone=True):
         """
         lbp_params: 
@@ -13,9 +13,12 @@ class MicrostructureNet(nn.Module):
         self.len_lbp_config = len(lbp_settings) if lbp_settings is not None else 0
 
         # ---------------- Backbone ----------------
-        backbone = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V2)
-        self.rgb_extractor = nn.Sequential(*list(backbone.children())[:-1])
-        rgb_dim = backbone.fc.in_features
+        backbone = models.densenet201(weights=DenseNet201_Weights.IMAGENET1K_V1)
+
+        self.rgb_extractor = backbone.features  # correct feature extractor
+        rgb_dim = backbone.classifier.in_features  # 1920 for DenseNet201
+
+        self.rgb_pool = nn.AdaptiveAvgPool2d(1)
 
         # Freeze backbone if requested
         if freeze_backbone:
@@ -46,7 +49,8 @@ class MicrostructureNet(nn.Module):
 
     def forward(self, rgb, lbp=None):
         # Extract RGB features
-        x_rgb = self.rgb_extractor(rgb).flatten(1)
+        x_rgb = self.rgb_extractor(rgb)
+        x_rgb = self.rgb_pool(x_rgb).flatten(1)
 
         # Extract LBP features
         if self.len_lbp_config:
