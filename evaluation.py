@@ -12,7 +12,7 @@ import pandas as pd
 
 @torch.no_grad()
 def evaluate_and_visualize_single_head(
-    result_path
+    result_path,
     model,
     loader,
     device,
@@ -65,7 +65,7 @@ def evaluate_and_visualize_single_head(
                 if probs[i][preds[i]].item() < min_confidence_threshold:
                     rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
                     if lbp_enabled is not None:
-                        lbp_hist = normalized_histogram(lbp.cpu(), bins=n_bins)
+                        lbp_hist = normalized_histogram(lbp[i].cpu(), bins=n_bins)
                     else:
                         lbp_hist = np.zeros(n_bins, dtype=np.float32)
 

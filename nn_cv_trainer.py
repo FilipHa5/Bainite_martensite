@@ -187,7 +187,7 @@ def run_outer_fold(
     test_accuracy_nn,
     hybrid_accuracy
     ) = evaluate_and_visualize_single_head(
-        result_path
+        result_path,
         model=nn_model,
         loader=test_loader,
         device=device,
