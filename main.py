@@ -12,9 +12,9 @@ import numpy as np
 data_root = os.path.join("images")
 
 BATCH_SIZE=128
-PATCH_SIZE=128
-STRIDE=64
-LBP_SETTINGS=None#[(16, 2), (24,3), (32, 4)]
+PATCH_SIZE=64
+STRIDE=32
+LBP_SETTINGS=[(16, 2)]
 LR = 1e-3
 EPOCHS = 100
 
@@ -72,9 +72,9 @@ def main():
             build_secondary_model=build_dt_model,
             data_root=data_root,
             inner_splits=3,
-            batch_size=128,
-            patch_size=256,
-            stride=64,
+            batch_size=BATCH_SIZE,
+            patch_size=PATCH_SIZE,
+            stride=STRIDE,
             lbp_settings=LBP_SETTINGS,
             param_grid=None,
             device=device,
@@ -101,9 +101,9 @@ def main():
                 build_secondary_model=build_dt_model,
                 data_root=data_root,
                 inner_splits=3,
-                batch_size=128,
-                patch_size=256,
-                stride=64,
+                batch_size=BATCH_SIZE,
+                patch_size=PATCH_SIZE,
+                stride=STRIDE,
                 lbp_settings=LBP_SETTINGS,
                 param_grid=None,
                 device=device,

@@ -8,7 +8,7 @@
 ## Ilość pamięci przypadającej na jeden rdzeń obliczeniowy (domyślnie 5GB na rdzeń)
 #SBATCH --mem-per-cpu=16GB
 ## Maksymalny czas trwania zlecenia (format HH:MM:SS)
-#SBATCH --time=24:00:00 
+#SBATCH --time=00:18:00 
 ## Nazwa grantu do rozliczenia zużycia zasobów CPU
 #SBATCH -A plgstaleimetale-gpu-a100
 ## Specyfikacja partycji

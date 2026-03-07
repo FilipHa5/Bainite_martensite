@@ -193,7 +193,7 @@ def run_outer_fold(
         device=device,
         max_show=len(test_loader.dataset),
         secondary_model=dt_classifier,
-        min_confidence_threshold=0.85,
+        min_confidence_threshold=0.8,
     )
     
     plot_misclassified_with_heatmap(result_path, misclassified, sigma=2, alpha=0.5)

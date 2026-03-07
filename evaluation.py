@@ -9,6 +9,7 @@ from scipy.ndimage import gaussian_filter
 import torch
 from sklearn.metrics import classification_report, confusion_matrix
 import pandas as pd
+import seaborn as sns
 
 @torch.no_grad()
 def evaluate_and_visualize_single_head(
@@ -21,6 +22,7 @@ def evaluate_and_visualize_single_head(
     secondary_model=None,
     min_confidence_threshold=None,
     n_bins=16,
+    min_margin=0.1
 ):
     model.eval()
 
@@ -61,8 +63,11 @@ def evaluate_and_visualize_single_head(
             all_prob_vectors.append(probs[i].cpu().numpy())
             all_eval_paths.append(img_paths[i])
 
+            sorted_probs = torch.sort(probs[i], descending=True).values
+            margin = sorted_probs[0] - sorted_probs[1]  # conf1 - conf2
+
             if secondary_model:
-                if probs[i][preds[i]].item() < min_confidence_threshold:
+                if probs[i][preds[i]].item() < min_confidence_threshold:# or margin < min_margin and margin is not None:
                     rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
                     if lbp_enabled is not None:
                         lbp_hist = normalized_histogram(lbp[i].cpu(), bins=n_bins)
@@ -104,7 +109,7 @@ def evaluate_and_visualize_single_head(
     hybrid_accuracy = (all_true_np == hybrid_pred_np).mean()
     
     # Generate classification report
-    report = classification_report(
+    report_dict = classification_report(
         all_true,
         hybrid_pred_np,
         target_names=class_names,
@@ -117,8 +122,11 @@ def evaluate_and_visualize_single_head(
     with open(os.path.join(result_path, "classification_report.txt"), "w") as f:
         f.write(report_df.to_string(float_format="%.4f"))
     report_df.to_csv(os.path.join(result_path, "classification_report.csv"), float_format="%.4f")
+    
 
     conf_matrix = confusion_matrix(all_true, hybrid_pred_np)
+    if class_names is None:
+        class_names = [str(i) for i in range(conf_matrix.shape[0])]
     np.save(os.path.join(result_path, "confusion_matrix.npy"), conf_matrix)
     cm_df = pd.DataFrame(conf_matrix, index=class_names, columns=class_names)
     cm_df.to_csv(os.path.join(result_path, "confusion_matrix.csv"))
@@ -173,7 +181,7 @@ def evaluate_and_visualize_single_head(
         all_pred,
         all_true,
         all_prob_vectors,
-        report,
+        report_dict,
         conf_matrix,
         test_accuracy,
         hybrid_accuracy
