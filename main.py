@@ -12,9 +12,9 @@ import numpy as np
 data_root = os.path.join("images")
 
 BATCH_SIZE=128
-PATCH_SIZE=64
-STRIDE=32
-LBP_SETTINGS=[(16, 2)]
+PATCH_SIZE=128
+STRIDE=64
+LBP_SETTINGS=None#[(16, 2)]
 LR = 1e-3
 EPOCHS = 100
 
@@ -69,7 +69,7 @@ def main():
             outer_splits=4,
             result_path=result_path,
             build_primary_model=build_densenet_model,
-            build_secondary_model=build_dt_model,
+            build_secondary_model=build_resnet_model,
             data_root=data_root,
             inner_splits=3,
             batch_size=BATCH_SIZE,

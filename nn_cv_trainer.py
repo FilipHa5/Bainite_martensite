@@ -201,13 +201,13 @@ def run_outer_fold(
     create_misclassification_density_maps(result_path, all_eval_paths, coords, preds, trues)
     
     plot_misclassified(result_path, misclassified)
-    create_heatmaps_per_image(result_path, all_eval_paths, coords, probs, sigma=2)
+    create_heatmaps_per_image(result_path, all_eval_paths, coords, probs, sigma=0)
 
     # 4️⃣ Per-class error maps (example target_class = 0)
     create_per_class_error_maps(result_path, all_eval_paths, coords, preds, trues, target_class=0)
 
     # 5️⃣ Uncertainty maps
-    create_uncertainty_maps(result_path, all_eval_paths, coords, prob_vectors)
+    create_uncertainty_maps(result_path, all_eval_paths, coords, prob_vectors, misclassified)
 
     print("Outer test score NN:", test_accuracy_nn)
     print("Outer test score DT:", dt_accuracy)

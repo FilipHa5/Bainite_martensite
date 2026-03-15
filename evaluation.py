@@ -169,7 +169,6 @@ def evaluate_and_visualize_single_head(
 
     plt.tight_layout()
     plt.savefig(os.path.join(result_path,"confusion_matrix_plot.pdf"), dpi=600, bbox_inches="tight")
-    plt.savefig(os.path.join(result_path,"confusion_matrix_plot.png"), dpi=600, bbox_inches="tight")
 
     plt.close()
 
@@ -196,6 +195,11 @@ def build_heatmap(H, W, patches_list, sigma=2):
     Build normalized heatmap from patch confidence scores.
     Handles overlapping regions properly.
     """
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
     heatmap = np.zeros((H, W), dtype=float)
     countmap = np.zeros((H, W), dtype=float)
 
@@ -215,7 +219,13 @@ def build_heatmap(H, W, patches_list, sigma=2):
         heatmap = gaussian_filter(heatmap, sigma=sigma)
 
     return heatmap
+
 def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.5):
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     img_to_patches = defaultdict(list)
     for item in misclassified_list:
@@ -327,6 +337,11 @@ def plot_misclassified(results_path, misclassified_list):
         - "pred": predicted label
         - "prob_pred": confidence score (0-1)
     """
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     # n_bins = clf.bins_used
 
@@ -347,7 +362,7 @@ def plot_misclassified(results_path, misclassified_list):
         # --- Plot original image with rectangles ---
         ax_img.imshow(img)
         ax_img.axis("off")
-        ax_img.set_title(f"Misclassified Patches - {item["img_path"]}")
+        # ax_img.set_title(f"Misclassified Patches - {item["img_path"]}")
 
         for item in patches_list:
             # rgb_hist = normalized_histogram(item["image"], bins=n_bins)
@@ -378,15 +393,15 @@ def plot_misclassified(results_path, misclassified_list):
             )
             ax_img.add_patch(rect)
 
-            # Add label
-            ax_img.text(
-                x1,
-                y1 - 5,
-                f"T:{item['true']} P:{item['pred']}",
-                color='yellow',
-                fontsize=8,
-                bbox=dict(facecolor='black', alpha=0.6)
-            )
+            # # Add label
+            # ax_img.text(
+            #     x1,
+            #     y1 - 5,
+            #     f"T:{item['true']} P:{item['pred']}",
+            #     color='yellow',
+            #     fontsize=8,
+            #     bbox=dict(facecolor='black', alpha=0.6)
+            # )
 
         #     # Fill heatmap for this patch
         #     prob = float(item["prob_pred"])
@@ -406,11 +421,16 @@ def plot_misclassified(results_path, misclassified_list):
         plt.close(fig)
         
 
-def create_heatmaps_per_image(results_path, all_eval_paths, coords, probs, sigma=2):
+def create_heatmaps_per_image(results_path, all_eval_paths, coords, probs, sigma=0):
     """
     Creates one confidence heatmap per evaluated image.
     all_eval_paths, coords, probs must be aligned.
     """
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     # -----------------------------
     # Group indices per image
@@ -445,23 +465,39 @@ def create_heatmaps_per_image(results_path, all_eval_paths, coords, probs, sigma
         mask = countmap > 0
         heatmap[mask] /= countmap[mask]
 
-        # Optional smoothing
-        if sigma > 0:
-            heatmap = gaussian_filter(heatmap, sigma=sigma)
-
         # -----------------------------
         # Plot
         # -----------------------------
-        plt.figure(figsize=(6, 6))
-        plt.imshow(heatmap, cmap="inferno", origin="upper")
-        plt.colorbar(label="Confidence")
-        plt.title(f"Confidence Heatmap\n{os.path.basename(img_path)}")
+        
+        np.save(os.path.join(results_path, "heatmap.npy"), heatmap)
+        
+        
+        masked_heatmap = np.ma.masked_where(heatmap == 0, heatmap)
+        # Optional smoothing
+        if sigma > 0:
+            masked_heatmap = gaussian_filter(heatmap, sigma=sigma)
+
+        vmin = masked_heatmap.min()
+        vmax = masked_heatmap.max()
+
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+        im = ax.imshow(masked_heatmap,
+                    cmap="inferno",
+                    origin="upper",
+                    vmin=vmin,
+                    vmax=vmax)
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Confidence")
+
+        # ax.set_title(f"Confidence Heatmap\n{os.path.basename(img_path)}")
 
         base = os.path.splitext(os.path.basename(img_path))[0]
         path_to_save = os.path.join(results_path, f"confidence_{base}.png")
-        plt.savefig(path_to_save, dpi=300)
-        plt.close()
 
+        plt.savefig(path_to_save, dpi=300, bbox_inches="tight")
+        plt.close()
     print(f"Saved {len(img_to_indices)} heatmaps.")
 
 
@@ -476,6 +512,11 @@ def create_misclassification_density_maps(results_path, all_eval_paths, coords, 
     import matplotlib.pyplot as plt
     from PIL import Image
     from scipy.ndimage import gaussian_filter
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     img_to_indices = defaultdict(list)
     for i, path in enumerate(all_eval_paths):
@@ -499,12 +540,19 @@ def create_misclassification_density_maps(results_path, all_eval_paths, coords, 
         mask = count_map > 0
         error_map[mask] /= count_map[mask]
 
-        error_map = gaussian_filter(error_map, sigma=2)
+        np.save(os.path.join(results_path, "error_map.npy"), error_map)
+    
+        error_map = gaussian_filter(error_map, sigma=3)
 
-        plt.figure(figsize=(6, 6))
-        plt.imshow(error_map, cmap="magma", origin="upper")
-        plt.colorbar(label="Misclassification Density")
-        plt.title(f"Error Density\n{os.path.basename(img_path)}")
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+        im = ax.imshow(error_map,
+                    cmap="magma",
+                    origin="upper")
+        
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Confidence")
+        # plt.title(f"Error Density\n{os.path.basename(img_path)}")
 
         base = os.path.splitext(os.path.basename(img_path))[0]
         
@@ -524,6 +572,12 @@ def create_per_class_error_maps(results_path, all_eval_paths, coords, preds, tru
     import matplotlib.pyplot as plt
     from PIL import Image
     from scipy.ndimage import gaussian_filter
+    
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     img_to_indices = defaultdict(list)
     for i, path in enumerate(all_eval_paths):
@@ -554,16 +608,17 @@ def create_per_class_error_maps(results_path, all_eval_paths, coords, preds, tru
         plt.figure(figsize=(6, 6))
         plt.imshow(class_error_map, cmap="inferno", origin="upper")
         plt.colorbar(label="Class Error Density")
-        plt.title(f"Class {target_class} Error Map\n{os.path.basename(img_path)}")
+        # plt.title(f"Class {target_class} Error Map\n{os.path.basename(img_path)}")
 
         base = os.path.splitext(os.path.basename(img_path))[0]
         path_to_save = os.path.join(results_path, f"class_{target_class}_error_{base}.png")
         plt.savefig(path_to_save, dpi=300)
         plt.close()
-
-def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors):
+def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors, misclassified_list):
     """
     prob_vectors: list of softmax vectors per patch (shape: [N, num_classes])
+    misclassified_list: list of dicts with keys:
+        img_path, coords, true, pred, prob_pred
     """
 
     from collections import defaultdict
@@ -571,11 +626,25 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors):
     import numpy as np
     import matplotlib.pyplot as plt
     from PIL import Image
+    import cv2  # OpenCV for color map
     from scipy.ndimage import gaussian_filter
+    import seaborn as sns
+    import matplotlib.patches as patches
+
+    plt.rcParams.update({
+        "font.family": "serif",
+        "font.size": 12,
+        "axes.linewidth": 1.2
+    })
 
     img_to_indices = defaultdict(list)
     for i, path in enumerate(all_eval_paths):
         img_to_indices[path].append(i)
+
+    # group misclassified patches by image
+    mis_by_img = defaultdict(list)
+    for item in misclassified_list:
+        mis_by_img[item["img_path"]].append(item)
 
     for img_path, indices in img_to_indices.items():
 
@@ -597,14 +666,97 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors):
         mask = count_map > 0
         uncertainty_map[mask] /= count_map[mask]
 
+        base = os.path.splitext(os.path.basename(img_path))[0]
+
+        np.save(os.path.join(results_path, f"uncertainty_map_{base}.npy"), uncertainty_map)
+
+        # smooth
         uncertainty_map = gaussian_filter(uncertainty_map, sigma=2)
 
-        plt.figure(figsize=(6, 6))
-        plt.imshow(uncertainty_map, cmap="viridis", origin="upper")
-        plt.colorbar(label="Prediction Entropy")
-        plt.title(f"Uncertainty Map\n{os.path.basename(img_path)}")
+        # -------------------------
+        # 1️⃣ Pure uncertainty map
+        # -------------------------
+        sns.set_theme(style="white")
 
-        base = os.path.splitext(os.path.basename(img_path))[0]
-        base = os.path.splitext(os.path.basename(img_path))[0]
+        fig, ax = plt.subplots(figsize=(6, 6))
+
+        im = ax.imshow(
+            uncertainty_map,
+            cmap=sns.color_palette("mako", as_cmap=True),
+            origin="upper"
+        )
+
+        cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Prediction Entropy")
+
+        ax.set_title("Uncertainty Map")
+
+        plt.tight_layout()
+
         path_to_save = os.path.join(results_path, f"uncertainty_{base}.png")
-        plt.close() 
+        plt.savefig(path_to_save, dpi=600, bbox_inches="tight")
+        plt.close()
+
+        # -------------------------
+        # 2️⃣ Overlay heatmap + grayscale + boxes
+        # -------------------------
+
+        img_gray = np.array(img.convert("L"))
+
+        # normalize uncertainty map
+        unc_norm = uncertainty_map - uncertainty_map.min()
+        if unc_norm.max() > 0:
+            unc_norm = unc_norm / unc_norm.max()
+
+        # -------------------------
+        # 2.1 Generate the heatmap using OpenCV
+        # -------------------------
+        # Convert the normalized uncertainty map to a color heatmap using OpenCV's applyColorMap
+        heatmap = cv2.applyColorMap((unc_norm * 255).astype(np.uint8), cv2.COLORMAP_MAGMA)
+        
+        # -------------------------
+        # 2.2 Alpha blending: Grayscale image + Heatmap
+        # -------------------------
+        img_gray_rgb = np.stack([img_gray] * 3, axis=-1)  # Convert grayscale to RGB
+        img_gray_rgb = cv2.cvtColor(img_gray_rgb, cv2.COLOR_RGB2BGR)  # Convert to BGR for OpenCV
+
+        # Perform alpha blending with normalized uncertainty
+        alpha = unc_norm[..., None]  # Reshape to match dimensions (H, W, 1)
+
+        # Blend grayscale image with heatmap based on uncertainty
+        img_with_uncertainty = cv2.convertScaleAbs(
+            img_gray_rgb * (1 - alpha) + heatmap * alpha
+        )
+
+        # Ensure the resulting image is within valid range [0, 255]
+        img_with_uncertainty = np.clip(img_with_uncertainty, 0, 255).astype(np.uint8)
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        # Display the combined image
+        ax.imshow(img_with_uncertainty, origin="upper")
+
+        # draw misclassified boxes
+        for item in mis_by_img.get(img_path, []):
+            x1, y1, x2, y2 = map(int, item["coords"])
+            width = x2 - x1
+            height = y2 - y1
+
+            rect = patches.Rectangle(
+                (x1, y1),
+                width,
+                height,
+                linewidth=2,
+                edgecolor="red",
+                facecolor="none"
+            )
+            ax.add_patch(rect)
+
+        ax.set_title("Uncertainty + Misclassified Patches")
+        ax.axis("off")
+
+        plt.tight_layout()
+
+        overlay_path = os.path.join(results_path, f"uncertainty_overlay_{base}.png")
+        plt.savefig(overlay_path, dpi=600, bbox_inches="tight")
+        plt.close()
