@@ -1,6 +1,6 @@
 import torch
 import os
-from models import MicrostructureNet, MicrostructureDenseNet
+from models import MicrostructureResNet50, MicrostructureDenseNet
 # from utils import run_nested_cv
 from save_params import StoreParams
 from loaders import make_cv_loaders
@@ -14,7 +14,7 @@ data_root = os.path.join("images")
 BATCH_SIZE=128
 PATCH_SIZE=128
 STRIDE=64
-LBP_SETTINGS=None#[(16, 2)]
+LBP_SETTINGS=None
 LR = 1e-3
 EPOCHS = 100
 
@@ -35,8 +35,8 @@ def main():
     # -------------------------
     # Model builders
     # -------------------------
-    def build_resnet_model():
-        return MicrostructureNet(lbp_settings=LBP_SETTINGS, freeze_backbone=True)
+    def build_resnet50_model():
+        return MicrostructureResNet50(lbp_settings=LBP_SETTINGS, freeze_backbone=True)
     
     def build_densenet_model():
         return MicrostructureDenseNet(lbp_settings=LBP_SETTINGS, freeze_backbone=True)
@@ -66,10 +66,10 @@ def main():
         # -------------------------
         nn_score, dt_score = run_outer_fold(
             outer_fold=args.outer_fold,
-            outer_splits=4,
+            outer_splits=2,
             result_path=result_path,
             build_primary_model=build_densenet_model,
-            build_secondary_model=build_resnet_model,
+            build_secondary_model=build_resnet50_model,
             data_root=data_root,
             inner_splits=3,
             batch_size=BATCH_SIZE,
@@ -97,7 +97,7 @@ def main():
                 outer_fold=fold,
                 outer_splits=4,
                 result_path=result_path,
-                build_primary_model=build_resnet_model,
+                build_primary_model=build_densenet_model,
                 build_secondary_model=build_dt_model,
                 data_root=data_root,
                 inner_splits=3,

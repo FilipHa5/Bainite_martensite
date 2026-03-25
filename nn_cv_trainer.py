@@ -18,9 +18,10 @@ from evaluation import (
                 )
 from plot_training import plot_training_history
 import numpy as np
-from models import train_dt_model
+from models import train_dt_model, train_xgb_model
 from loaders import make_cv_loaders_from_samples, collect_img_paths_with_labels, make_loader_from_samples
 import os
+from sklearn.model_selection import train_test_split
 
 def run_outer_fold(
     outer_fold,
@@ -140,7 +141,7 @@ def run_outer_fold(
             lbp_settings=lbp_settings,
         ):
 
-            dt_model, score_dt = train_dt_model(train_loader, val_loader, bins)
+            dt_model, score_dt = train_xgb_model(train_loader, val_loader, bins)
             inner_scores_dt.append(score_dt)
 
         mean_score_dt = np.mean(inner_scores_dt)
@@ -170,8 +171,8 @@ def run_outer_fold(
     train_full(nn_model, optimizer, criterion, full_train_loader, device, num_epochs=num_epochs)
 
     # ---- Train DT with best params ----
-    dt_classifier, dt_accuracy = train_dt_model(full_train_loader, test_loader, best_params_dt["bins"])
-    print("Final test DT accuracy:", dt_accuracy)
+    dt_classifier, dt_accuracy = train_xgb_model(full_train_loader, test_loader, best_params_dt["bins"])
+    print("Final test secondary accuracy:", dt_accuracy)
 
     # ---- Evaluate NN ----
     (
@@ -185,7 +186,8 @@ def run_outer_fold(
     report,
     cm,
     test_accuracy_nn,
-    hybrid_accuracy
+    hybrid_accuracy,
+    dt_accuracy
     ) = evaluate_and_visualize_single_head(
         result_path,
         model=nn_model,
@@ -196,7 +198,7 @@ def run_outer_fold(
         min_confidence_threshold=0.8,
     )
     
-    plot_misclassified_with_heatmap(result_path, misclassified, sigma=2, alpha=0.5)
+    plot_misclassified_with_heatmap(result_path, misclassified, sigma=2, alpha=0.3)
     
     create_misclassification_density_maps(result_path, all_eval_paths, coords, preds, trues)
     
@@ -210,7 +212,7 @@ def run_outer_fold(
     create_uncertainty_maps(result_path, all_eval_paths, coords, prob_vectors, misclassified)
 
     print("Outer test score NN:", test_accuracy_nn)
-    print("Outer test score DT:", dt_accuracy)
+    print("Outer test score secondary:", dt_accuracy)
     
     print("Hybrid classification accuracy:", hybrid_accuracy)
 

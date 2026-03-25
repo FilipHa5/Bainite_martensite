@@ -33,6 +33,7 @@ def evaluate_and_visualize_single_head(
     all_prob_vectors = []
     misclassified = []
     all_eval_paths = []
+    all_dt_pred = []
     hybrid_pred=[]
     secondary_pred_correct_ctr=0
     secondary_pred_missed_ctr=0
@@ -40,7 +41,6 @@ def evaluate_and_visualize_single_head(
 
     for batch in loader:
         rgb = batch["rgb"].to(device)
-        # lbp=batch["lbp"].to(device)
         labels = batch["label"].to(device)
         coords = batch["coords"].to(device)
         img_paths = batch["img_path"]
@@ -67,26 +67,34 @@ def evaluate_and_visualize_single_head(
             margin = sorted_probs[0] - sorted_probs[1]  # conf1 - conf2
 
             if secondary_model:
-                if probs[i][preds[i]].item() < min_confidence_threshold:# or margin < min_margin and margin is not None:
-                    rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
-                    if lbp_enabled is not None:
-                        lbp_hist = normalized_histogram(lbp[i].cpu(), bins=n_bins)
-                    else:
-                        lbp_hist = np.zeros(n_bins, dtype=np.float32)
+                rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
+                
+                if lbp_enabled is not None:
+                    lbp_hist = normalized_histogram(lbp[i].cpu(), bins=n_bins)
+                else:
+                    lbp_hist = np.zeros(n_bins, dtype=np.float32)
 
-                    features = np.concatenate([rgb_hist, lbp_hist])
+                features = np.concatenate([rgb_hist, lbp_hist])
+                pred_dt = secondary_model.predict(features.reshape(1, -1))[0]
 
-                    pred_dt = secondary_model.predict(features.reshape(1,-1))
-                    hybrid_pred.append(pred_dt[0])
+                # store DT prediction ALWAYS
+                all_dt_pred.append(pred_dt)
+
+                # ---- Hybrid logic (UNCHANGED) ----
+                if probs[i][preds[i]].item() < min_confidence_threshold:
+                    hybrid_pred.append(pred_dt)
+
                     print(f"Confidence: {probs[i][preds[i]].item()}", end=";")
-                    if pred_dt[0] != labels[i].item():
-                        secondary_pred_missed_ctr+=1
-                        print(f"DT Fucked up. Pred: {pred_dt[0]}, true: {labels[i].item()}")
+                    model_name = secondary_model.__class__.__name__
+
+                    if pred_dt != labels[i].item():
+                        secondary_pred_missed_ctr += 1
+                        print(f"{model_name} Fucked up. Pred: {pred_dt}, true: {labels[i].item()}")
                     else:
-                        secondary_pred_correct_ctr+=1
-                        total_hybrid_correct+=1
-                        print(f"DT worked well. Pred: {pred_dt[0]}, true: {labels[i].item()}")
-                        
+                        secondary_pred_correct_ctr += 1
+                        total_hybrid_correct += 1
+                        print(f"{model_name} worked well. Pred: {pred_dt}, true: {labels[i].item()}")
+
                 else:
                     hybrid_pred.append(preds[i].item())
                     
@@ -103,12 +111,49 @@ def evaluate_and_visualize_single_head(
     # ---- Compute accuracy ----
     all_true_np = np.array(all_true)
     all_pred_np = np.array(all_pred)
+    all_dt_pred_np = np.array(all_dt_pred)
     hybrid_pred_np = np.array(hybrid_pred)
     test_accuracy = (all_true_np == all_pred_np).mean()
+    dt_accuracy = (all_true_np == all_dt_pred_np).mean()
+    
+    report_dict_dt = classification_report(
+    all_true,
+    all_dt_pred_np,
+    target_names=class_names,
+    digits=4,
+    zero_division=0,
+    output_dict=True
+)
+
+    # Generate DT classification report
+    report_df_dt = pd.DataFrame(report_dict_dt).transpose()
+
+    with open(os.path.join(result_path, "classification_report_dt.txt"), "w") as f:
+        f.write(report_df_dt.to_string(float_format="%.4f"))
+
+    report_df_dt.to_csv(
+        os.path.join(result_path, "classification_report_dt.csv"),
+        float_format="%.4f"
+    )
+    
+    # Generate NN classification report
+    report_dict = classification_report(
+        all_true,
+        all_pred,
+        target_names=class_names,
+        digits=4,
+        zero_division=0,
+        output_dict=True
+    )
+
+    report_df = pd.DataFrame(report_dict).transpose()
+    with open(os.path.join(result_path, "classification_report_nn.txt"), "w") as f:
+        f.write(report_df.to_string(float_format="%.4f"))
+    report_df.to_csv(os.path.join(result_path, "classification_repor_nn.csv"), float_format="%.4f")
     
     hybrid_accuracy = (all_true_np == hybrid_pred_np).mean()
     
-    # Generate classification report
+    # Generate Hybrid classification report
     report_dict = classification_report(
         all_true,
         hybrid_pred_np,
@@ -119,9 +164,9 @@ def evaluate_and_visualize_single_head(
     )
 
     report_df = pd.DataFrame(report_dict).transpose()
-    with open(os.path.join(result_path, "classification_report.txt"), "w") as f:
+    with open(os.path.join(result_path, "classification_report_hybrid.txt"), "w") as f:
         f.write(report_df.to_string(float_format="%.4f"))
-    report_df.to_csv(os.path.join(result_path, "classification_report.csv"), float_format="%.4f")
+    report_df.to_csv(os.path.join(result_path, "classification_report_hybrid.csv"), float_format="%.4f")
     
 
     conf_matrix = confusion_matrix(all_true, hybrid_pred_np)
@@ -183,7 +228,8 @@ def evaluate_and_visualize_single_head(
         report_dict,
         conf_matrix,
         test_accuracy,
-        hybrid_accuracy
+        hybrid_accuracy,
+        dt_accuracy
     )
 
 def perform_all_patches_corrections(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
@@ -220,7 +266,7 @@ def build_heatmap(H, W, patches_list, sigma=2):
 
     return heatmap
 
-def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.5):
+def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.3):
     plt.rcParams.update({
         "font.family": "serif",
         "font.size": 12,
@@ -713,7 +759,7 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors, 
         # -------------------------
         # Convert the normalized uncertainty map to a color heatmap using OpenCV's applyColorMap
         heatmap = cv2.applyColorMap((unc_norm * 255).astype(np.uint8), cv2.COLORMAP_MAGMA)
-        
+        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)  # ✅ convert
         # -------------------------
         # 2.2 Alpha blending: Grayscale image + Heatmap
         # -------------------------
@@ -730,10 +776,9 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors, 
 
         # Ensure the resulting image is within valid range [0, 255]
         img_with_uncertainty = np.clip(img_with_uncertainty, 0, 255).astype(np.uint8)
-
         fig, ax = plt.subplots(figsize=(8, 8))
 
-        # Display the combined image
+        # show overlay image
         ax.imshow(img_with_uncertainty, origin="upper")
 
         # draw misclassified boxes
@@ -748,9 +793,35 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors, 
                 height,
                 linewidth=2,
                 edgecolor="red",
-                facecolor="none"
+                facecolor="none",
+                label="Misclassified Patch"
             )
             ax.add_patch(rect)
+
+        # --- create legend entry manually (so duplicates don't appear) ---
+        legend_patch = patches.Patch(
+            edgecolor="red",
+            facecolor="none",
+            linewidth=2,
+            label="Misclassified Patch"
+        )
+
+        ax.legend(
+            handles=[legend_patch],
+            loc="upper right",
+            frameon=True
+        )
+
+        # --- add colorbar for uncertainty ---
+        import matplotlib.cm as cm
+        import matplotlib.colors as mcolors
+
+        norm = mcolors.Normalize(vmin=unc_norm.min(), vmax=unc_norm.max())
+        sm = cm.ScalarMappable(norm=norm, cmap="magma")
+        sm.set_array([])
+
+        cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Prediction Uncertainty (Entropy)")
 
         ax.set_title("Uncertainty + Misclassified Patches")
         ax.axis("off")
