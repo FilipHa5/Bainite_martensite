@@ -18,220 +18,353 @@ def evaluate_and_visualize_single_head(
     loader,
     device,
     max_show=16,
-    class_names=None,  # optional list of class names,
+    class_names=None,
     secondary_model=None,
-    min_confidence_threshold=None,
-    n_bins=16,
-    min_margin=0.1
+    secondary_type="xgb",
+    min_confidence_threshold=0.7,
+    n_bins=16
 ):
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import torch
+    import pandas as pd
+    from sklearn.metrics import classification_report
+
     model.eval()
 
+    if secondary_model and secondary_type == "cnn":
+        secondary_model.eval()
+
+    def secondary_forward(rgb_tensor, lbp_tensor):
+        if secondary_model is None:
+            return {"pred": None, "conf": None, "probs": None}
+
+        if secondary_type == "xgb":
+            rgb_hist = normalized_histogram(rgb_tensor.cpu(), bins=n_bins)
+            lbp_hist = (
+                normalized_histogram(lbp_tensor.cpu(), bins=n_bins)
+                if lbp_tensor is not None else np.zeros(n_bins, dtype=np.float32)
+            )
+            features = np.concatenate([rgb_hist, lbp_hist])
+
+            dt_pred = secondary_model.predict(features.reshape(1, -1))[0]
+            dt_probs = secondary_model.predict_proba(features.reshape(1, -1))[0]
+            dt_conf = dt_probs[dt_pred]
+
+            return {"pred": dt_pred, "conf": dt_conf, "probs": dt_probs}
+
+        elif secondary_type == "cnn":
+            if lbp_tensor is not None:
+                logits = secondary_model(rgb_tensor.unsqueeze(0), lbp_tensor.unsqueeze(0))
+            else:
+                logits = secondary_model(rgb_tensor.unsqueeze(0))
+
+            probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+            pred = int(np.argmax(probs))
+            conf = float(probs[pred])
+
+            return {"pred": pred, "conf": conf, "probs": probs}
+
+        else:
+            raise ValueError(f"Unknown secondary_type: {secondary_type}")
+
+    # --- GLOBAL STORAGE ---
     all_true = []
     all_pred = []
     all_dominant_probs = []
     all_coords = []
     all_prob_vectors = []
-    misclassified = []
     all_eval_paths = []
-    all_dt_pred = []
-    hybrid_pred=[]
-    secondary_pred_correct_ctr=0
-    secondary_pred_missed_ctr=0
-    total_hybrid_correct=0
+    all_margins = []
+    all_dt_prob_vectors = []
 
+    all_dt_pred = []
+    all_dt_confidence = []
+
+    all_images = []            # ✅ FIX
+    all_img_paths = []         # ✅ FIX
+    all_coords_list = []       # ✅ FIX
+
+    misclassified_nn = []
+    misclassified_secondary = []
+
+    secondary_info = []
+
+    # --- MAIN LOOP ---
     for batch in loader:
         rgb = batch["rgb"].to(device)
         labels = batch["label"].to(device)
         coords = batch["coords"].to(device)
         img_paths = batch["img_path"]
-
         lbp_enabled = batch.get("lbp", None)
+
         if lbp_enabled is not None:
-            lbp = batch["lbp"].to(device, non_blocking=True)
+            lbp = batch["lbp"].to(device)
             logits = model(rgb, lbp)
         else:
+            lbp = None
             logits = model(rgb)
 
         probs = torch.softmax(logits, dim=1)
         preds = logits.argmax(dim=1)
 
         for i in range(rgb.size(0)):
-            all_true.append(labels[i].item())
-            all_pred.append(preds[i].item())
-            all_dominant_probs.append(probs[i][preds[i]].item())
+            true_label = labels[i].item()
+            nn_pred = preds[i].item()
+            confidence = probs[i][nn_pred].item()
+
+            sorted_probs = torch.sort(probs[i], descending=True).values
+            margin = (sorted_probs[0] - sorted_probs[1]).item()
+
+            # --- store global ---
+            all_true.append(true_label)
+            all_pred.append(nn_pred)
+            all_dominant_probs.append(confidence)
             all_coords.append(coords[i].cpu().tolist())
             all_prob_vectors.append(probs[i].cpu().numpy())
             all_eval_paths.append(img_paths[i])
+            all_margins.append(margin)
 
-            sorted_probs = torch.sort(probs[i], descending=True).values
-            margin = sorted_probs[0] - sorted_probs[1]  # conf1 - conf2
+            all_images.append(rgb[i].cpu())            # ✅ FIX
+            all_img_paths.append(img_paths[i])         # ✅ FIX
+            all_coords_list.append(coords[i].cpu().tolist())  # ✅ FIX
+
+            # --- secondary ---
+            sec_out = secondary_forward(
+                rgb[i],
+                lbp[i] if lbp is not None else None
+            )
+
+            dt_pred = sec_out["pred"]
+            dt_conf = sec_out["conf"]
+            dt_probs = sec_out["probs"]
 
             if secondary_model:
-                rgb_hist = normalized_histogram(rgb[i].cpu(), bins=n_bins)
-                
-                if lbp_enabled is not None:
-                    lbp_hist = normalized_histogram(lbp[i].cpu(), bins=n_bins)
-                else:
-                    lbp_hist = np.zeros(n_bins, dtype=np.float32)
+                all_dt_pred.append(dt_pred)
+                all_dt_confidence.append(dt_conf)
+                all_dt_prob_vectors.append(dt_probs)
 
-                features = np.concatenate([rgb_hist, lbp_hist])
-                pred_dt = secondary_model.predict(features.reshape(1, -1))[0]
-
-                # store DT prediction ALWAYS
-                all_dt_pred.append(pred_dt)
-
-                # ---- Hybrid logic (UNCHANGED) ----
-                if probs[i][preds[i]].item() < min_confidence_threshold:
-                    hybrid_pred.append(pred_dt)
-
-                    print(f"Confidence: {probs[i][preds[i]].item()}", end=";")
-                    model_name = secondary_model.__class__.__name__
-
-                    if pred_dt != labels[i].item():
-                        secondary_pred_missed_ctr += 1
-                        print(f"{model_name} Fucked up. Pred: {pred_dt}, true: {labels[i].item()}")
-                    else:
-                        secondary_pred_correct_ctr += 1
-                        total_hybrid_correct += 1
-                        print(f"{model_name} worked well. Pred: {pred_dt}, true: {labels[i].item()}")
-
-                else:
-                    hybrid_pred.append(preds[i].item())
-                    
-            if preds[i] != labels[i] and len(misclassified) < max_show:
-                misclassified.append({
+            # --- misclassified NN ---
+            if nn_pred != true_label and len(misclassified_nn) < max_show:
+                misclassified_nn.append({
                     "image": rgb[i].cpu(),
                     "img_path": img_paths[i],
-                    "true": labels[i].item(),
-                    "pred": preds[i].item(),
-                    "prob_pred": probs[i][preds[i]].item(),
+                    "true": true_label,
+                    "pred": nn_pred,
+                    "prob_pred": confidence,
                     "coords": coords[i].cpu().tolist()
                 })
 
-    # ---- Compute accuracy ----
+            secondary_info.append({
+                "nn_pred": nn_pred,
+                "nn_conf": confidence,
+                "dt_pred": dt_pred,
+                "dt_conf": dt_conf,
+                "true": true_label
+            })
+
+    # --- HYBRID ---
+    adaptive_threshold = max(min_confidence_threshold, np.percentile(all_dominant_probs, 20))
+    hybrid_pred = []
+
+    secondary_correct = 0   # XGB truly fixed NN
+    secondary_failed = 0    # XGB truly hurt NN
+    secondary_used = 0      # XGB actually made the decision
+    agreement_cases = 0     # models agree
+
+    for info in secondary_info:
+        nn_pred = info["nn_pred"]
+        nn_conf = info["nn_conf"]
+        dt_pred = info["dt_pred"]
+        dt_conf = info["dt_conf"]
+        true_label = info["true"]
+
+        # --- no secondary ---
+        if dt_pred is None:
+            hybrid_pred.append(nn_pred)
+            continue
+
+        # --- high-confidence NN ---
+        if nn_conf >= adaptive_threshold:
+            hybrid_pred.append(nn_pred)
+            continue
+
+        # --- fallback region ---
+        if dt_pred == nn_pred:
+            # agreement → no real decision
+            hybrid_pred.append(nn_pred)
+            agreement_cases += 1
+
+        elif dt_conf > nn_conf:
+            # XGB OVERRIDES NN
+            hybrid_pred.append(dt_pred)
+            secondary_used += 1
+
+            if dt_pred == true_label:
+                secondary_correct += 1   # true fix
+            else:
+                secondary_failed += 1    # true damage
+
+        else:
+            # NN stays
+            hybrid_pred.append(nn_pred)
+
+    # --- NUMPY ---
     all_true_np = np.array(all_true)
     all_pred_np = np.array(all_pred)
-    all_dt_pred_np = np.array(all_dt_pred)
     hybrid_pred_np = np.array(hybrid_pred)
-    test_accuracy = (all_true_np == all_pred_np).mean()
-    dt_accuracy = (all_true_np == all_dt_pred_np).mean()
-    
-    report_dict_dt = classification_report(
-    all_true,
-    all_dt_pred_np,
-    target_names=class_names,
-    digits=4,
-    zero_division=0,
-    output_dict=True
-)
 
-    # Generate DT classification report
-    report_df_dt = pd.DataFrame(report_dict_dt).transpose()
+    test_accuracy = (all_pred_np == all_true_np).mean()
+    hybrid_accuracy = (hybrid_pred_np == all_true_np).mean()
 
-    with open(os.path.join(result_path, "classification_report_dt.txt"), "w") as f:
-        f.write(report_df_dt.to_string(float_format="%.4f"))
+    # --- REPORTS ---
+    if secondary_model and len(all_dt_pred) > 0:
+        all_dt_pred_np = np.array(all_dt_pred)
 
-    report_df_dt.to_csv(
-        os.path.join(result_path, "classification_report_dt.csv"),
-        float_format="%.4f"
-    )
-    
-    # Generate NN classification report
-    report_dict = classification_report(
-        all_true,
-        all_pred,
-        target_names=class_names,
-        digits=4,
-        zero_division=0,
-        output_dict=True
-    )
+        report_df_dt = pd.DataFrame(
+            classification_report(
+                all_true,
+                all_dt_pred_np,
+                target_names=class_names,
+                output_dict=True,
+                zero_division=0
+            )
+        ).transpose()
 
-    report_df = pd.DataFrame(report_dict).transpose()
+        report_df_dt.to_csv(os.path.join(result_path, "classification_report_dt.csv"))
+        # Pretty text version
+        report_text = classification_report(
+            all_true,
+            all_dt_pred_np,
+            target_names=class_names,
+            zero_division=0
+        )
+
+        with open(os.path.join(result_path, "classification_report_dt.txt"), "w") as f:
+            f.write(report_text)
+
+    report_df_nn = pd.DataFrame(
+        classification_report(
+            all_true,
+            all_pred,
+            target_names=class_names,
+            output_dict=True,
+            zero_division=0
+        )
+    ).transpose()
+
+    report_df_nn.to_csv(os.path.join(result_path, "classification_report_nn.csv"))
+    report_text = classification_report(
+            all_true,
+            all_pred,
+            target_names=class_names,
+            zero_division=0
+        )
+
     with open(os.path.join(result_path, "classification_report_nn.txt"), "w") as f:
-        f.write(report_df.to_string(float_format="%.4f"))
-    report_df.to_csv(os.path.join(result_path, "classification_repor_nn.csv"), float_format="%.4f")
-    
-    hybrid_accuracy = (all_true_np == hybrid_pred_np).mean()
-    
-    # Generate Hybrid classification report
-    report_dict = classification_report(
-        all_true,
-        hybrid_pred_np,
-        target_names=class_names,
-        digits=4,
-        zero_division=0,
-        output_dict=True
-    )
+            f.write(report_text)
 
-    report_df = pd.DataFrame(report_dict).transpose()
+    report_df_hyb = pd.DataFrame(
+        classification_report(
+            all_true,
+            hybrid_pred_np,
+            target_names=class_names,
+            output_dict=True,
+            zero_division=0
+        )
+    ).transpose()
+
+    report_df_hyb.to_csv(os.path.join(result_path, "classification_report_hybrid.csv"))
+    report_text = classification_report(
+            all_true,
+            hybrid_pred_np,
+            target_names=class_names,
+            zero_division=0
+        )
+
     with open(os.path.join(result_path, "classification_report_hybrid.txt"), "w") as f:
-        f.write(report_df.to_string(float_format="%.4f"))
-    report_df.to_csv(os.path.join(result_path, "classification_report_hybrid.csv"), float_format="%.4f")
-    
+            f.write(report_text)
 
-    conf_matrix = confusion_matrix(all_true, hybrid_pred_np)
-    if class_names is None:
-        class_names = [str(i) for i in range(conf_matrix.shape[0])]
-    np.save(os.path.join(result_path, "confusion_matrix.npy"), conf_matrix)
-    cm_df = pd.DataFrame(conf_matrix, index=class_names, columns=class_names)
-    cm_df.to_csv(os.path.join(result_path, "confusion_matrix.csv"))
+    # --- FALLBACK DEBUG ---
+    fallback_indices = [i for i, conf in enumerate(all_dominant_probs) if conf < adaptive_threshold]
+    for i in fallback_indices:
+        if not secondary_model:
+            continue
 
-    cm_normalized = conf_matrix.astype(float) / conf_matrix.sum(axis=1)[:, np.newaxis]
+        nn_pred = all_pred[i]
+        true = all_true[i]
+        nn_conf = all_dominant_probs[i]          # ✅ FIX
 
-    plt.rcParams.update({
-        "font.family": "serif",
-        "font.size": 12,
-        "axes.linewidth": 1.2
-    })
+        dt_pred = all_dt_pred[i]
+        dt_conf = all_dt_confidence[i]
+        dt_probs = all_dt_prob_vectors[i]        # ✅ FIX
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+        # --- status logic (you NEED this) ---
+        if nn_pred != true and dt_pred == true:
+            status = "✅ FIXED by XGB"
 
-    sns.heatmap(
-        cm_normalized,
-        annot=True,
-        fmt=".3f",
-        cmap="Greys",
-        cbar=True,
-        square=True,
-        linewidths=0.8,
-        linecolor="black",
-        xticklabels=class_names,
-        yticklabels=class_names,
-        ax=ax
-    )
+        elif nn_pred == true and dt_pred != true:
+            status = "❌ BROKEN by XGB"
 
-    ax.set_xlabel("Predicted Label", labelpad=10)
-    ax.set_ylabel("True Label", labelpad=10)
-    ax.set_title("Normalized Confusion Matrix", pad=15)
+            misclassified_secondary.append({
+                "image": all_images[i],
+                "img_path": all_img_paths[i],
+                "true": true,
+                "pred": dt_pred,
+                "prob_pred": dt_conf,
+                "coords": all_coords_list[i]
+            })
 
-    # Improve tick formatting
-    plt.xticks(rotation=45, ha="right")
-    plt.yticks(rotation=0)
+        elif nn_pred == dt_pred:
+            if nn_pred == true:
+                status = "✔ both correct"
+            else:
+                status = "✖ both wrong"
 
-    # Remove unnecessary spines
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+                misclassified_secondary.append({
+                    "image": all_images[i],
+                    "img_path": all_img_paths[i],
+                    "true": true,
+                    "pred": dt_pred,
+                    "prob_pred": dt_conf,
+                    "coords": all_coords_list[i]
+                })
+        else:
+            status = "⚠ disagreement"
 
-    plt.tight_layout()
-    plt.savefig(os.path.join(result_path,"confusion_matrix_plot.pdf"), dpi=600, bbox_inches="tight")
-
-    plt.close()
+        # --- PRINT ---
+        print(
+            f"[{i}] "
+            f"NN: {nn_pred} ({nn_conf:.3f}) | "
+            f"{secondary_type.upper()}: {dt_pred} ({dt_conf:.3f}) | "
+            f"TRUE={true} | {status}\n"
+            f"   {secondary_type.upper()} probs: {np.round(dt_probs, 4)}"
+        )
+        
+        print("=== HYBRID ANALYSIS ===")
+        print(f"Fallback samples: {sum(info['nn_conf'] < adaptive_threshold for info in secondary_info)}")
+        print(f"XGB actually used: {secondary_used}")
+        print(f"Agreement cases: {agreement_cases}")
+        if secondary_used > 0:
+            print(f"XGB precision (when used): {secondary_correct / secondary_used:.4f}")
+        print(f"Fixes (XGB corrected NN): {secondary_correct}")
+        print(f"Breaks (XGB ruined NN): {secondary_failed}")
+        if (secondary_correct + secondary_failed) > 0:
+            print(f"Net gain: {secondary_correct - secondary_failed}")
 
     return (
-        misclassified,
+        misclassified_nn,
         all_coords,
         all_dominant_probs,
         all_eval_paths,
         all_pred,
         all_true,
         all_prob_vectors,
-        report_dict,
-        conf_matrix,
         test_accuracy,
         hybrid_accuracy,
-        dt_accuracy
+        misclassified_secondary
     )
-
 def perform_all_patches_corrections(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
     for coords, prob, img_path, pred, true in zip(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
         print(prob)
@@ -266,7 +399,7 @@ def build_heatmap(H, W, patches_list, sigma=2):
 
     return heatmap
 
-def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.3):
+def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, alpha=0.3, postfix=None):
     plt.rcParams.update({
         "font.family": "serif",
         "font.size": 12,
@@ -319,7 +452,12 @@ def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, a
         combined_path = os.path.join(
             results_path, f"combined_{base}.png"
         )
+        if postfix:
+            combined_path = os.path.join(
+            results_path, "secondary_"+f"combined_{base}.png"
+        )
         plt.savefig(combined_path, dpi=300, bbox_inches="tight")
+            
         plt.close(fig)
 
         # =====================================================
@@ -345,6 +483,10 @@ def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, a
         boxes_path = os.path.join(
             results_path, f"boxes_{base}.png"
         )
+        if postfix:
+            combined_path = os.path.join(
+            boxes_path, "secondary_"+f"boxes_{base}.png"
+        )
         plt.savefig(boxes_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
 
@@ -365,6 +507,10 @@ def plot_misclassified_with_heatmap(results_path, misclassified_list, sigma=2, a
 
         heatmap_path = os.path.join(
             results_path, f"heatmap_{base}.png"
+        )
+        if postfix:
+            combined_path = os.path.join(
+            heatmap_path, "secondary_"+f"heatmap_{base}.png"
         )
         plt.savefig(heatmap_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
@@ -823,7 +969,7 @@ def create_uncertainty_maps(results_path, all_eval_paths, coords, prob_vectors, 
         cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
         cbar.set_label("Prediction Uncertainty (Entropy)")
 
-        ax.set_title("Uncertainty + Misclassified Patches")
+        # ax.set_title("Uncertainty + Misclassified Patches")
         ax.axis("off")
 
         plt.tight_layout()

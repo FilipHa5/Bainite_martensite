@@ -49,6 +49,10 @@ def parse_log_file(filepath):
     confidence_pattern = re.compile(
         r"Confidence: ([\d.]+);XGBClassifier (worked well|Fucked up)\. Pred: (\d), true: (\d)"
     )
+    
+    fallback_pattern = re.compile(
+        r"\[(\d+)\]\s+NN:\s+pred=(\d+)\s+conf=([\d.]+)\s+\|\s+XGB:\s+pred=(\d+)\s+conf=([\d.]+)\s+\|\s+TRUE=(\d+)"
+    )
 
     nn_score_pattern = re.compile(r"Outer test score NN: ([\d.]+)")
     dt_score_pattern = re.compile(r"Outer test score DT: ([\d.]+)")
@@ -56,7 +60,7 @@ def parse_log_file(filepath):
 
     data = defaultdict(lambda: defaultdict(list))
     xgb_results = defaultdict(list)
-
+    fallback_results = defaultdict(list)
     summary = defaultdict(dict)
 
     current_outer = None
@@ -122,7 +126,23 @@ def parse_log_file(filepath):
                     "true": true,
                     "correct": pred == true
                 })
+            fb_match = fallback_pattern.search(line)
+            if fb_match and current_outer is not None:
 
+                patch_id = int(fb_match.group(1))
+                nn_pred = int(fb_match.group(2))
+                nn_conf = float(fb_match.group(3))
+                xgb_pred = int(fb_match.group(4))
+                xgb_conf = float(fb_match.group(5))
+                true = int(fb_match.group(6))
+
+                fallback_results[current_outer].append({
+                    "patch": patch_id,
+                    "nn_conf": nn_conf,
+                    "xgb_conf": xgb_conf,
+                    "nn_correct": nn_pred == true,
+                    "xgb_correct": xgb_pred == true,
+                })
             nn_match = nn_score_pattern.search(line)
             if nn_match:
                 summary[current_outer]["nn_score"] = float(nn_match.group(1))
@@ -135,8 +155,97 @@ def parse_log_file(filepath):
             if hybrid_match:
                 summary[current_outer]["hybrid_score"] = float(hybrid_match.group(1))
 
-    return data, xgb_results, summary
+    return data, xgb_results, fallback_results, summary 
 
+def plot_nn_vs_xgb(df, outdir):
+
+    if df.empty:
+        return
+
+    plt.figure(figsize=(5,5))
+
+    sns.scatterplot(
+        data=df,
+        x="nn_conf",
+        y="xgb_conf",
+        hue="xgb_correct",
+        palette=[palette[3], palette[0]],
+        alpha=0.7
+    )
+
+    plt.plot([0,1],[0,1],"--", color="gray")
+
+    plt.xlabel("NN Confidence")
+    plt.ylabel("XGB Confidence")
+    plt.title("Fallback: NN vs XGB")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "nn_vs_xgb_scatter.svg"))
+    plt.close()
+
+def plot_confidence_gap(df, outdir):
+
+    if df.empty:
+        return
+
+    df = df.copy()
+    df["gap"] = df["xgb_conf"] - df["nn_conf"]
+
+    plt.figure(figsize=(6,4))
+
+    sns.histplot(df["gap"], bins=30, kde=True)
+    plt.axvline(0, linestyle="--", color="red")
+
+    plt.xlabel("XGB - NN Confidence")
+    plt.title("Confidence Gap (Fallback)")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "confidence_gap.svg"))
+    plt.close()
+    
+def plot_fallback_outcomes(df, outdir):
+
+    if df.empty:
+        return
+
+    cases = []
+
+    for _, r in df.iterrows():
+        if not r["nn_correct"] and r["xgb_correct"]:
+            cases.append("XGB fixes NN")
+        elif r["nn_correct"] and not r["xgb_correct"]:
+            cases.append("XGB breaks NN")
+        else:
+            cases.append("Same")
+
+    df = df.copy()
+    df["case"] = cases
+
+    plt.figure(figsize=(6,4))
+
+    sns.countplot(data=df, x="case")
+
+    plt.title("Fallback Outcomes")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(outdir, "fallback_outcomes.svg"))
+    plt.close()
+    
+def build_fallback_dataframe(fallback_results):
+
+    rows = []
+
+    for fold, results in fallback_results.items():
+        for r in results:
+            rows.append({
+                "fold": fold,
+                "nn_conf": r["nn_conf"],
+                "xgb_conf": r["xgb_conf"],
+                "nn_correct": "Correct" if r["nn_correct"] else "Wrong",
+                "xgb_correct": "Correct" if r["xgb_correct"] else "Wrong",
+            })
+
+    return pd.DataFrame(rows)
 
 # -----------------------------
 # LEARNING CURVES
@@ -224,15 +333,16 @@ def build_dataframe(xgb_results):
 # -----------------------------
 # CONFIDENCE DISTRIBUTION
 # -----------------------------
-
-def plot_confidence_distribution(df, outdir):
-
+def plot_confidence_distribution(df, outdir, conf_col="nn_conf", correct_col="nn_correct"):
+    """
+    Plot histogram of confidences for either NN or secondary model.
+    """
     plt.figure(figsize=(6,4))
 
     sns.histplot(
         data=df,
-        x="confidence",
-        hue="correct",
+        x=conf_col,
+        hue=correct_col,
         bins=20,
         kde=True,
         palette=[palette[0], palette[3]]
@@ -240,12 +350,11 @@ def plot_confidence_distribution(df, outdir):
 
     plt.xlabel("Confidence")
     plt.ylabel("Count")
-    plt.title("XGB Confidence Distribution")
+    plt.title(f"{conf_col.upper()} Confidence Distribution")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(outdir, "confidence_distribution.svg"))
+    plt.savefig(os.path.join(outdir, f"{conf_col}_confidence_distribution.svg"))
     plt.close()
-
 
 # -----------------------------
 # CALIBRATION CURVE
@@ -417,11 +526,9 @@ def plot_model_comparison(summary, outdir):
     plt.savefig(os.path.join(outdir, "model_comparison.svg"))
     plt.close()
 
-
 # -----------------------------
 # MAIN
 # -----------------------------
-
 def main():
 
     parser = argparse.ArgumentParser()
@@ -436,18 +543,51 @@ def main():
     os.makedirs(curves_dir, exist_ok=True)
     os.makedirs(xgb_dir, exist_ok=True)
 
-    data, xgb_results, summary = parse_log_file(args.logfile)
+    # -----------------------------
+    # Parse logs
+    # -----------------------------
+    data, xgb_results, fallback_results, summary = parse_log_file(args.logfile)
 
+    # -----------------------------
+    # Build dataframes
+    # -----------------------------
+    df_xgb = build_dataframe(xgb_results)                     # For XGB-only data
+    df_fb = build_fallback_dataframe(fallback_results)       # For fallback data (NN vs XGB)
+
+    # -----------------------------
+    # Plot learning curves
+    # -----------------------------
     plot_learning_curves(data, curves_dir)
 
-    df = build_dataframe(xgb_results)
+    # -----------------------------
+    # XGB-specific plots
+    # -----------------------------
+    if not df_xgb.empty:
+        plot_confidence_distribution(df_xgb, xgb_dir)           # XGB-only
+        plot_calibration(xgb_results, xgb_dir)
+        plot_confidence_scatter(xgb_results, xgb_dir)
+        plot_conf_threshold(xgb_results, xgb_dir)
+        plot_fold_box(df_xgb, xgb_dir)
 
-    plot_confidence_distribution(df, xgb_dir)
-    plot_calibration(xgb_results, xgb_dir)
-    plot_confidence_scatter(xgb_results, xgb_dir)
-    plot_conf_threshold(xgb_results, xgb_dir)
-    plot_fold_box(df, xgb_dir)
+    # -----------------------------
+    # Fallback/hybrid plots
+    # -----------------------------
+    if not df_fb.empty:
+        # Confidence distributions
+        plot_confidence_distribution(df_fb, xgb_dir, conf_col="nn_conf", correct_col="nn_correct")
+        plot_confidence_distribution(df_fb, xgb_dir, conf_col="xgb_conf", correct_col="xgb_correct")
 
+        # Boxplots
+        plot_fold_box(df_fb, xgb_dir)  # modify function if needed to handle nn_conf/xgb_conf columns
+
+        # Custom fallback/hybrid plots
+        plot_nn_vs_xgb(df_fb, xgb_dir)
+        plot_confidence_gap(df_fb, xgb_dir)
+        plot_fallback_outcomes(df_fb, xgb_dir)
+
+    # -----------------------------
+    # Model comparison summary
+    # -----------------------------
     plot_model_comparison(summary, xgb_dir)
 
     print("Analysis finished.")

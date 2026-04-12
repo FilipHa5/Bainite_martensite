@@ -14,7 +14,7 @@ data_root = os.path.join("images")
 BATCH_SIZE=128
 PATCH_SIZE=128
 STRIDE=64
-LBP_SETTINGS=None
+LBP_SETTINGS=[(24,3)]
 LR = 1e-3
 EPOCHS = 100
 
@@ -66,10 +66,10 @@ def main():
         # -------------------------
         nn_score, dt_score = run_outer_fold(
             outer_fold=args.outer_fold,
-            outer_splits=2,
+            outer_splits=4,
             result_path=result_path,
             build_primary_model=build_densenet_model,
-            build_secondary_model=build_resnet50_model,
+            build_secondary_model=build_densenet_model,
             data_root=data_root,
             inner_splits=3,
             batch_size=BATCH_SIZE,
@@ -78,7 +78,8 @@ def main():
             lbp_settings=LBP_SETTINGS,
             param_grid=None,
             device=device,
-            epochs=EPOCHS
+            epochs=EPOCHS,
+            secondary_type="xgb"
         )
 
         print(f"\nFold {args.outer_fold} finished.")

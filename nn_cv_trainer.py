@@ -37,7 +37,8 @@ def run_outer_fold(
     lbp_settings=[(1, 8), (3, 16)],
     param_grid=None,
     device="cuda",
-    epochs=50
+    epochs=50,
+    secondary_type="cnn"
 ):
 
     if param_grid is None:
@@ -85,7 +86,9 @@ def run_outer_fold(
     for lr, wd in product(param_grid["lr"], param_grid["weight_decay"]):
         print(f"Inner loop NN, LR: {lr}, WD: {wd}")
         inner_scores_nn = []
+        inner_scores_secondary = []
         inner_best_epochs = []
+        inner_best_epochs_secondary = []
 
         for _, train_loader, val_loader in make_cv_loaders_from_samples(
             trainval_samples,
@@ -111,46 +114,70 @@ def run_outer_fold(
             )
             score = max(history["val_acc"])
             inner_scores_nn.append(score)
+            
+            if secondary_type == "cnn":
+                secondary_model = build_secondary_model().to(device)
+                secondary_model, history = train_single_val(
+                    nn_model,
+                    optimizer,
+                    criterion,
+                    train_loader,
+                    val_loader,
+                    device=device,
+                    num_epochs=epochs,
+                    patience=7,
+                )
+                score_secondary = max(history["val_acc"])
+                inner_scores_secondary.append(score)
+                
+                best_epoch_fold_secondary = np.argmax(history["val_acc"]) + 1
+                inner_best_epochs_secondary.append(best_epoch_fold_secondary)
 
             best_epoch_fold = np.argmax(history["val_acc"]) + 1
             inner_best_epochs.append(best_epoch_fold)
 
         mean_score_nn = np.mean(inner_scores_nn)
-        mean_epoch_nn = int(np.median(inner_best_epochs))
+        med_epoch_nn = int(np.median(inner_best_epochs))
+        try:
+            med_epoch_secondary_nn = int(np.median(inner_best_epochs_secondary))
+        except:
+            med_epoch_secondary_nn = 0
         if mean_score_nn > best_score_nn:
             best_score_nn = mean_score_nn
             best_params_nn = {
                 "lr": lr,
                 "weight_decay": wd,
-                "epochs": mean_epoch_nn
+                "epochs": med_epoch_nn,
+                "secondary_epochs" : med_epoch_secondary_nn
             }
 
     # -------------------------
     # INNER LOOP for DT
     # -------------------------
-    for bins in param_grid["bins"]:
-        print("Inner loop, DT bins", bins)
-        inner_scores_dt = []
+    if secondary_type=="xgb":
+        for bins in param_grid["bins"]:
+            print("Inner loop, DT bins", bins)
+            inner_scores_dt = []
 
-        for _, train_loader, val_loader in make_cv_loaders_from_samples(
-            trainval_samples,
-            batch_size=batch_size,
-            n_splits=inner_splits,
-            patch_size=patch_size,
-            stride=stride,
-            lbp_settings=lbp_settings,
-        ):
+            for _, train_loader, val_loader in make_cv_loaders_from_samples(
+                trainval_samples,
+                batch_size=batch_size,
+                n_splits=inner_splits,
+                patch_size=patch_size,
+                stride=stride,
+                lbp_settings=lbp_settings,
+            ):
 
-            dt_model, score_dt = train_xgb_model(train_loader, val_loader, bins)
-            inner_scores_dt.append(score_dt)
+                secondary_model, score_dt = train_xgb_model(train_loader, val_loader, bins)
+                inner_scores_dt.append(score_dt)
 
-        mean_score_dt = np.mean(inner_scores_dt)
-        if mean_score_dt > best_score_dt:
-            best_score_dt = mean_score_dt
-            best_params_dt = {"bins": bins}
+            mean_score_dt = np.mean(inner_scores_dt)
+            if mean_score_dt > best_score_dt:
+                best_score_dt = mean_score_dt
+                best_params_dt = {"bins": bins}
 
-    print("Best inner params NN:", best_params_nn)
-    print("Best inner params DT:", best_params_dt, "accuracy score: ", score_dt)
+        print("Best inner params NN:", best_params_nn)
+        print("Best inner params DT:", best_params_dt, "accuracy score: ", score_dt)
 
     # -------------------------
     # FINAL TRAIN ON FULL TRAINVAL
@@ -167,12 +194,18 @@ def run_outer_fold(
         weight_decay=best_params_nn["weight_decay"],
     )
     num_epochs = best_params_nn["epochs"]
+    num_epochs_secondary = best_params_nn["secondary_epochs"]
     print(f"Training NN on full data: {num_epochs} epochs")
     train_full(nn_model, optimizer, criterion, full_train_loader, device, num_epochs=num_epochs)
 
     # ---- Train DT with best params ----
-    dt_classifier, dt_accuracy = train_xgb_model(full_train_loader, test_loader, best_params_dt["bins"])
-    print("Final test secondary accuracy:", dt_accuracy)
+    if secondary_type=="xgb":
+        dt_classifier, secondary_accuracy = train_xgb_model(full_train_loader, test_loader, best_params_dt["bins"])
+        print("Final test secondary accuracy:", secondary_accuracy)
+    if secondary_type=="cnn":
+        print(f"Training secondary NN on full data: {num_epochs} epochs")
+        train_full(secondary_model, optimizer, criterion, full_train_loader, device, num_epochs=num_epochs_secondary)
+        
 
     # ---- Evaluate NN ----
     (
@@ -183,22 +216,22 @@ def run_outer_fold(
     preds,
     trues,
     prob_vectors,
-    report,
-    cm,
     test_accuracy_nn,
     hybrid_accuracy,
-    dt_accuracy
+    misclassified_secondary
     ) = evaluate_and_visualize_single_head(
         result_path,
         model=nn_model,
         loader=test_loader,
         device=device,
         max_show=len(test_loader.dataset),
-        secondary_model=dt_classifier,
+        secondary_model=secondary_model,
+        secondary_type=secondary_type,
         min_confidence_threshold=0.8,
     )
     
     plot_misclassified_with_heatmap(result_path, misclassified, sigma=2, alpha=0.3)
+    plot_misclassified_with_heatmap(result_path, misclassified_secondary, sigma=2, alpha=0.3, postfix="_secondary")
     
     create_misclassification_density_maps(result_path, all_eval_paths, coords, preds, trues)
     
@@ -210,13 +243,12 @@ def run_outer_fold(
 
     # 5️⃣ Uncertainty maps
     create_uncertainty_maps(result_path, all_eval_paths, coords, prob_vectors, misclassified)
-
     print("Outer test score NN:", test_accuracy_nn)
-    print("Outer test score secondary:", dt_accuracy)
+    print("Outer test score secondary:", secondary_accuracy)
     
     print("Hybrid classification accuracy:", hybrid_accuracy)
 
-    return test_accuracy_nn, dt_accuracy
+    return test_accuracy_nn, secondary_accuracy
 
 def run_nested_cv_dual_separate(
     result_path,

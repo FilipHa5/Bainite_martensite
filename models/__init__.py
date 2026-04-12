@@ -1,3 +1,3 @@
-from .microstructure_net import MicrostructureNet
+from .microstructure_resnet50 import MicrostructureResNet50
 from .microstructure_densenet import MicrostructureDenseNet
-from .dt_classifier import train_dt_model, normalized_histogram
+from .dt_classifier import train_dt_model, normalized_histogram, train_xgb_model

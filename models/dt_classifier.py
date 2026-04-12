@@ -1,6 +1,7 @@
 import numpy as np
 
 from sklearn.tree import DecisionTreeClassifier
+from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report
 import os
 
@@ -115,12 +116,34 @@ def loader_to_numpy(loader, device, bins=128):
 
 def build_dt_model():
     clf = DecisionTreeClassifier(
+        max_depth=10,
+        min_samples_split=10,
+        min_samples_leaf=5,
         random_state=42,
         class_weight='balanced'
     )
-
     return clf
 
+def build_xgb_model(scale_pos_weight=1.0):
+    model = XGBClassifier(
+        n_estimators=300,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="binary:logistic",
+        eval_metric="logloss",
+        # GPU settings
+        tree_method="gpu_hist",
+        predictor="gpu_predictor",
+        gpu_id=0,
+
+        scale_pos_weight=scale_pos_weight,
+        random_state=42,
+        n_jobs=-1
+    )
+
+    return model
 
 def train_dt_model(train_loader, val_loader, bins=128):
     device = "cpu"
@@ -140,6 +163,33 @@ def train_dt_model(train_loader, val_loader, bins=128):
 
     return clf, val_acc
 
+def train_xgb_model(train_loader, val_loader, bins=128):
+    device = "cpu"
+
+    X_train, y_train = loader_to_numpy(train_loader, device, bins)
+    X_val, y_val = loader_to_numpy(val_loader, device, bins)
+
+    # compute class imbalance weight
+    pos = np.sum(y_train == 1)
+    neg = np.sum(y_train == 0)
+    scale_pos_weight = neg / pos if pos > 0 else 1
+
+    clf = build_xgb_model(scale_pos_weight)
+
+    clf.fit(
+        X_train,
+        y_train,
+        eval_set=[(X_val, y_val)],
+        early_stopping_rounds=20,
+        verbose=False
+    )
+
+    clf.bins_used = bins
+
+    y_pred = clf.predict(X_val)
+    val_acc = accuracy_score(y_val, y_pred)
+
+    return clf, val_acc
 
 def predict_on_missclassified(clf, loader, device):
     X, y = loader_to_numpy(loader, device, clf.bins_used)
