@@ -38,14 +38,18 @@ def run_outer_fold(
     param_grid=None,
     device="cuda",
     epochs=50,
-    secondary_type="cnn"
+    secondary_type="cnn",
+    seed=42
 ):
 
     if param_grid is None:
         param_grid = {
             "lr": [1e-3],
-            "weight_decay": [0],
+            "weight_decay": [1e-4],
             "bins": [16],
+            # "lr": [1e-3, 1e-4],
+            # "weight_decay": [0, 1e-4, 1e-3],
+            # "bins": [16, 128, 256],
         }
 
     print(f"\n========== OUTER FOLD {outer_fold} ==========")
@@ -59,7 +63,7 @@ def run_outer_fold(
 
     outer_kf = StratifiedKFold(
         n_splits=outer_splits,
-        random_state=42,
+        random_state=seed,
         shuffle=True
     )
 
@@ -97,6 +101,7 @@ def run_outer_fold(
             patch_size=patch_size,
             stride=stride,
             lbp_settings=lbp_settings,
+            seed=seed
         ):
 
             nn_model = build_primary_model().to(device)
@@ -166,9 +171,10 @@ def run_outer_fold(
                 patch_size=patch_size,
                 stride=stride,
                 lbp_settings=lbp_settings,
+                seed=seed
             ):
 
-                secondary_model, score_dt = train_xgb_model(train_loader, val_loader, bins)
+                secondary_model, score_dt = train_xgb_model(train_loader, val_loader, bins, seed=seed)
                 inner_scores_dt.append(score_dt)
 
             mean_score_dt = np.mean(inner_scores_dt)
@@ -176,8 +182,8 @@ def run_outer_fold(
                 best_score_dt = mean_score_dt
                 best_params_dt = {"bins": bins}
 
-        print("Best inner params NN:", best_params_nn)
-        print("Best inner params DT:", best_params_dt, "accuracy score: ", score_dt)
+        print("Best inner hyperparams NN:", best_params_nn)
+        print("Best inner hyperparams DT:", best_params_dt, "accuracy score: ", score_dt)
 
     # -------------------------
     # FINAL TRAIN ON FULL TRAINVAL

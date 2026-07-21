@@ -1,123 +1,157 @@
-import torch
+import argparse
 import os
-from models import MicrostructureResNet50, MicrostructureDenseNet
-# from utils import run_nested_cv
-from save_params import StoreParams
-from loaders import make_cv_loaders
-from plot_training import plot_training_history
-from torch import nn
-from train import train_single_val
-from nn_cv_trainer import run_nested_cv_dual_separate, run_outer_fold
 import numpy as np
-data_root = os.path.join("images")
+import torch
 
-BATCH_SIZE=128
-PATCH_SIZE=128
-STRIDE=64
-LBP_SETTINGS=[(24,3)]
+from models import MicrostructureResNet50, MicrostructureDenseNet
+from save_params import StoreParams
+from nn_cv_trainer import run_outer_fold
+
+
+# =====================================================
+# Configuration
+# =====================================================
+
+DATA_ROOT = "images"
+
+BATCH_SIZE = 128
+PATCH_SIZE = 128
+STRIDE = 64
+LBP_SETTINGS = [(24, 3)]
+
 LR = 1e-3
 EPOCHS = 100
 
+OUTER_SPLITS = 4
+INNER_SPLITS = 3
 
-def main():
-    print("Hello from bainite-martensite!")
+SEEDS = range(12)
 
-    # Store parameters and result path
-    param_tracker = StoreParams()
-    param_tracker.add("batch_size", BATCH_SIZE)
-    param_tracker.add("patch_size", PATCH_SIZE)
-    param_tracker.add("stride", STRIDE)
-    param_tracker.add("LBP", LBP_SETTINGS)
-    param_tracker.add("lr", LR)
-    param_tracker.add("epochs", EPOCHS)
-    
 
-    # -------------------------
-    # Model builders
-    # -------------------------
-    def build_resnet50_model():
-        return MicrostructureResNet50(lbp_settings=LBP_SETTINGS, freeze_backbone=True)
-    
-    def build_densenet_model():
-        return MicrostructureDenseNet(lbp_settings=LBP_SETTINGS, freeze_backbone=True)
-        
-    def build_dt_model():
-        raise NotImplementedError
+# =====================================================
+# Model builders
+# =====================================================
 
-    # -------------------------
-    # Detect if running as single outer fold (parallel)
-    # -------------------------
-    import argparse
-    import torch
+def build_resnet50():
+    return MicrostructureResNet50(
+        lbp_settings=LBP_SETTINGS,
+        freeze_backbone=True,
+    )
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--outer_fold", type=int, required=False, default=None)
-    parser.add_argument("--results", type=str, required=False, default="results")
-    args = parser.parse_args()
 
-    result_path = param_tracker.save_params(args.results)
+def build_densenet():
+    return MicrostructureDenseNet(
+        lbp_settings=LBP_SETTINGS,
+        freeze_backbone=True,
+    )
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Using device: {device}")
 
-    if args.outer_fold is not None:
-        # -------------------------
-        # Run SINGLE outer fold (for SLURM array or parallel execution)
-        # -------------------------
-        nn_score, dt_score = run_outer_fold(
-            outer_fold=args.outer_fold,
-            outer_splits=4,
+def build_dt():
+    raise NotImplementedError
+
+
+# =====================================================
+# Utilities
+# =====================================================
+
+def create_result_path_and_save_params(results_dir):
+    tracker = StoreParams()
+    tracker.add("batch_size", BATCH_SIZE)
+    tracker.add("patch_size", PATCH_SIZE)
+    tracker.add("stride", STRIDE)
+    tracker.add("LBP", LBP_SETTINGS)
+    tracker.add("epochs", EPOCHS)
+    tracker.add("seed", seed)
+
+    return tracker, dir
+
+
+def run_fold(fold, result_path, device, seed, secondary_type="dt"):
+    secondary_builder = (
+        build_densenet if secondary_type == "xgb" else build_dt
+    )
+
+    return run_outer_fold(
+        outer_fold=fold,
+        outer_splits=OUTER_SPLITS,
+        result_path=result_path,
+        build_primary_model=build_densenet,
+        build_secondary_model=secondary_builder,
+        data_root=DATA_ROOT,
+        inner_splits=INNER_SPLITS,
+        batch_size=BATCH_SIZE,
+        patch_size=PATCH_SIZE,
+        stride=STRIDE,
+        lbp_settings=LBP_SETTINGS,
+        param_grid=None,
+        device=device,
+        epochs=EPOCHS,
+        secondary_type=secondary_type,
+        seed=seed,
+    )
+
+
+def run_all_folds(result_path, device, seed):
+    nn_scores = []
+    dt_scores = []
+
+    for fold in range(OUTER_SPLITS):
+        nn, dt = run_fold(
+            fold=fold,
             result_path=result_path,
-            build_primary_model=build_densenet_model,
-            build_secondary_model=build_densenet_model,
-            data_root=data_root,
-            inner_splits=3,
-            batch_size=BATCH_SIZE,
-            patch_size=PATCH_SIZE,
-            stride=STRIDE,
-            lbp_settings=LBP_SETTINGS,
-            param_grid=None,
             device=device,
-            epochs=EPOCHS,
-            secondary_type="xgb"
+            seed=seed,
         )
 
+        nn_scores.append(nn)
+        dt_scores.append(dt)
+
+        print(f"Fold {fold}: NN={nn:.4f}, DT={dt:.4f}")
+
+    print("\n===== FINAL NESTED CV RESULT =====")
+    print(f"NN : {np.mean(nn_scores):.4f} ± {np.std(nn_scores):.4f}")
+    print(f"DT : {np.mean(dt_scores):.4f} ± {np.std(dt_scores):.4f}")
+
+
+# =====================================================
+# Main
+# =====================================================
+
+def main(seed, args):
+    print(f"\n========== Seed {seed} ==========")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    param_tracker, result_path = create_result_path_and_save_params(args.results)
+
+    print("Using device:", device)
+
+    if args.outer_fold is not None:
+        nn, dt = run_fold(
+            fold=args.outer_fold,
+            result_path=result_path,
+            device=device,
+            seed=seed,
+            secondary_type="xgb",
+        )
+
+        param_tracker.add("primary_model_score", nn)
+        param_tracker.add("secondary_model_score", dt)
+
         print(f"\nFold {args.outer_fold} finished.")
-        print("NN score:", nn_score)
-        print("DT score:", dt_score)
+        print("Seed:", seed)
+        print("NN score:", nn)
+        print("DT score:", dt)
 
     else:
-        # -------------------------
-        # Run all outer folds sequentially
-        # -------------------------
-        print("Running all outer folds sequentially...")
-        outer_scores_nn = []
-        outer_scores_dt = []
-        for fold in range(4):
-            nn_score, dt_score = run_outer_fold(
-                outer_fold=fold,
-                outer_splits=4,
-                result_path=result_path,
-                build_primary_model=build_densenet_model,
-                build_secondary_model=build_dt_model,
-                data_root=data_root,
-                inner_splits=3,
-                batch_size=BATCH_SIZE,
-                patch_size=PATCH_SIZE,
-                stride=STRIDE,
-                lbp_settings=LBP_SETTINGS,
-                param_grid=None,
-                device=device,
-                epochs=EPOCHS
-            )
-            outer_scores_nn.append(nn_score)
-            outer_scores_dt.append(dt_score)
-            print(f"Fold {fold} finished. NN: {nn_score}, DT: {dt_score}")
-
-        print("\n===== FINAL NESTED CV RESULT =====")
-        print("Mean NN:", np.mean(outer_scores_nn), "Std NN:", np.std(outer_scores_nn))
-        print("Mean DT:", np.mean(outer_scores_dt), "Std DT:", np.std(outer_scores_dt))
+        run_all_folds(result_path, device, seed)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--outer_fold", type=int, default=None)
+    parser.add_argument("--results", type=str, default="results")
+
+    args = parser.parse_args()
+
+    for seed in SEEDS:
+        main(seed, args)

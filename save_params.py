@@ -7,37 +7,49 @@ from pprint import pformat
 
 
 class StoreParams:
-    def __init__(self):
+    def __init__(self, auto_save=True, base_dir="saved_params"):
+        self._path = ""
         self._params = {}
         self._extra_files = {}
+        self._auto_save = auto_save
+        self._base_dir = base_dir
 
     def add(self, key, value):
-        """Store any Python object under a key."""
         self._params[key] = value
+        if self._auto_save:
+            self.save_params(self._base_dir)
 
     def add_classification_report(self, report_str=None, report_dict=None):
-        """
-        Store classification report (string and/or dict).
-        """
         if report_str is not None:
             self._extra_files["classification_report.txt"] = report_str
 
         if report_dict is not None:
             self._extra_files["classification_report.json"] = report_dict
 
+        if self._auto_save:
+            self.save_params(self._base_dir)
+
     def save_params(self, base_dir="saved_params"):
         """
-        Creates a unique directory and dumps:
+        Creates a unique directory on the first call and saves:
         - params.json
         - any extra files (like classification report)
+
+        Subsequent calls reuse the same directory.
         Returns the directory path.
         """
         base_path = Path(base_dir)
         base_path.mkdir(parents=True, exist_ok=True)
 
-        unique_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-        save_path = base_path / unique_id
-        save_path.mkdir()
+        # Reuse existing path if available
+        if self._path:
+            save_path = Path(self._path)
+            save_path.mkdir(parents=True, exist_ok=True)
+        else:
+            unique_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            save_path = base_path / unique_id
+            save_path.mkdir(parents=True, exist_ok=True)
+            self._path = str(save_path)
 
         # Save main params
         params_file = save_path / "params.json"

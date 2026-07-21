@@ -21,21 +21,19 @@ def evaluate_and_visualize_single_head(
     class_names=None,
     secondary_model=None,
     secondary_type="xgb",
-    min_confidence_threshold=0.7,
-    n_bins=16
+    min_confidence_threshold=0.75,
+    n_bins=16,
+    confidence_margin=0.15,
+    min_secondary_confidence=0.75,
 ):
-    import os
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import torch
-    import pandas as pd
-    from sklearn.metrics import classification_report
-
     model.eval()
 
     if secondary_model and secondary_type == "cnn":
         secondary_model.eval()
 
+    # ------------------------------------------------------------------ #
+    #  Secondary forward pass (XGBoost or CNN)                           #
+    # ------------------------------------------------------------------ #
     def secondary_forward(rgb_tensor, lbp_tensor):
         if secondary_model is None:
             return {"pred": None, "conf": None, "probs": None}
@@ -69,7 +67,37 @@ def evaluate_and_visualize_single_head(
         else:
             raise ValueError(f"Unknown secondary_type: {secondary_type}")
 
-    # --- GLOBAL STORAGE ---
+    # ------------------------------------------------------------------ #
+    #  Hybrid gating decision (single source of truth)                   #
+    # ------------------------------------------------------------------ #
+    def hybrid_decision(nn_pred, nn_conf, dt_pred, dt_conf, adaptive_threshold):
+        """Decide whether the secondary classifier should override the NN.
+
+        Returns:
+            use_xgb : bool  – True when the secondary prediction is accepted
+            decision : str  – human-readable reason for the decision
+        """
+        if dt_pred is None:
+            return False, "No secondary model"
+
+        if nn_conf >= adaptive_threshold:
+            return False, "High NN confidence"
+
+        if nn_pred == dt_pred:
+            return False, "Agreement"
+
+        if dt_conf < min_secondary_confidence:
+            return False, "Low XGB confidence"
+
+        delta = dt_conf - nn_conf
+        if delta < confidence_margin:
+            return False, "Small confidence margin"
+
+        return True, "Override"
+
+    # ------------------------------------------------------------------ #
+    #  Global storage                                                     #
+    # ------------------------------------------------------------------ #
     all_true = []
     all_pred = []
     all_dominant_probs = []
@@ -82,16 +110,18 @@ def evaluate_and_visualize_single_head(
     all_dt_pred = []
     all_dt_confidence = []
 
-    all_images = []            # ✅ FIX
-    all_img_paths = []         # ✅ FIX
-    all_coords_list = []       # ✅ FIX
+    all_images = []
+    all_img_paths = []
+    all_coords_list = []
 
     misclassified_nn = []
     misclassified_secondary = []
 
     secondary_info = []
 
-    # --- MAIN LOOP ---
+    # ------------------------------------------------------------------ #
+    #  Main evaluation loop                                               #
+    # ------------------------------------------------------------------ #
     for batch in loader:
         rgb = batch["rgb"].to(device)
         labels = batch["label"].to(device)
@@ -117,7 +147,6 @@ def evaluate_and_visualize_single_head(
             sorted_probs = torch.sort(probs[i], descending=True).values
             margin = (sorted_probs[0] - sorted_probs[1]).item()
 
-            # --- store global ---
             all_true.append(true_label)
             all_pred.append(nn_pred)
             all_dominant_probs.append(confidence)
@@ -126,11 +155,11 @@ def evaluate_and_visualize_single_head(
             all_eval_paths.append(img_paths[i])
             all_margins.append(margin)
 
-            all_images.append(rgb[i].cpu())            # ✅ FIX
-            all_img_paths.append(img_paths[i])         # ✅ FIX
-            all_coords_list.append(coords[i].cpu().tolist())  # ✅ FIX
+            all_images.append(rgb[i].cpu())
+            all_img_paths.append(img_paths[i])
+            all_coords_list.append(coords[i].cpu().tolist())
 
-            # --- secondary ---
+            # secondary model forward pass
             sec_out = secondary_forward(
                 rgb[i],
                 lbp[i] if lbp is not None else None
@@ -145,7 +174,7 @@ def evaluate_and_visualize_single_head(
                 all_dt_confidence.append(dt_conf)
                 all_dt_prob_vectors.append(dt_probs)
 
-            # --- misclassified NN ---
+            # collect NN misclassifications for visualisation
             if nn_pred != true_label and len(misclassified_nn) < max_show:
                 misclassified_nn.append({
                     "image": rgb[i].cpu(),
@@ -164,53 +193,55 @@ def evaluate_and_visualize_single_head(
                 "true": true_label
             })
 
-    # --- HYBRID ---
-    adaptive_threshold = max(min_confidence_threshold, np.percentile(all_dominant_probs, 20))
+    # ------------------------------------------------------------------ #
+    #  Hybrid classification                                              #
+    # ------------------------------------------------------------------ #
+    adaptive_threshold = np.clip(
+        np.percentile(all_dominant_probs, 10),
+        0.75,
+        0.90
+    )
+
     hybrid_pred = []
 
-    secondary_correct = 0   # XGB truly fixed NN
-    secondary_failed = 0    # XGB truly hurt NN
-    secondary_used = 0      # XGB actually made the decision
-    agreement_cases = 0     # models agree
+    successful_overrides = 0
+    failed_overrides = 0
+    secondary_used = 0
+    reject_agreement = 0
+    reject_low_confidence = 0
+    reject_small_margin = 0
+    override_deltas = []
 
     for info in secondary_info:
-        nn_pred = info["nn_pred"]
-        nn_conf = info["nn_conf"]
-        dt_pred = info["dt_pred"]
-        dt_conf = info["dt_conf"]
-        true_label = info["true"]
+        use_xgb, decision = hybrid_decision(
+            info["nn_pred"], info["nn_conf"],
+            info["dt_pred"], info["dt_conf"],
+            adaptive_threshold
+        )
 
-        # --- no secondary ---
-        if dt_pred is None:
-            hybrid_pred.append(nn_pred)
-            continue
-
-        # --- high-confidence NN ---
-        if nn_conf >= adaptive_threshold:
-            hybrid_pred.append(nn_pred)
-            continue
-
-        # --- fallback region ---
-        if dt_pred == nn_pred:
-            # agreement → no real decision
-            hybrid_pred.append(nn_pred)
-            agreement_cases += 1
-
-        elif dt_conf > nn_conf:
-            # XGB OVERRIDES NN
-            hybrid_pred.append(dt_pred)
+        if use_xgb:
+            hybrid_pred.append(info["dt_pred"])
             secondary_used += 1
+            override_deltas.append(info["dt_conf"] - info["nn_conf"])
 
-            if dt_pred == true_label:
-                secondary_correct += 1   # true fix
+            if info["dt_pred"] == info["true"]:
+                successful_overrides += 1
             else:
-                secondary_failed += 1    # true damage
-
+                failed_overrides += 1
         else:
-            # NN stays
-            hybrid_pred.append(nn_pred)
+            hybrid_pred.append(info["nn_pred"])
 
-    # --- NUMPY ---
+            if info["nn_conf"] < adaptive_threshold:
+                if decision == "Agreement":
+                    reject_agreement += 1
+                elif decision == "Low XGB confidence":
+                    reject_low_confidence += 1
+                elif decision == "Small confidence margin":
+                    reject_small_margin += 1
+
+    # ------------------------------------------------------------------ #
+    #  Accuracy                                                           #
+    # ------------------------------------------------------------------ #
     all_true_np = np.array(all_true)
     all_pred_np = np.array(all_pred)
     hybrid_pred_np = np.array(hybrid_pred)
@@ -218,7 +249,9 @@ def evaluate_and_visualize_single_head(
     test_accuracy = (all_pred_np == all_true_np).mean()
     hybrid_accuracy = (hybrid_pred_np == all_true_np).mean()
 
-    # --- REPORTS ---
+    # ------------------------------------------------------------------ #
+    #  Classification reports                                             #
+    # ------------------------------------------------------------------ #
     if secondary_model and len(all_dt_pred) > 0:
         all_dt_pred_np = np.array(all_dt_pred)
 
@@ -233,7 +266,7 @@ def evaluate_and_visualize_single_head(
         ).transpose()
 
         report_df_dt.to_csv(os.path.join(result_path, "classification_report_dt.csv"))
-        # Pretty text version
+
         report_text = classification_report(
             all_true,
             all_dt_pred_np,
@@ -255,15 +288,16 @@ def evaluate_and_visualize_single_head(
     ).transpose()
 
     report_df_nn.to_csv(os.path.join(result_path, "classification_report_nn.csv"))
+
     report_text = classification_report(
-            all_true,
-            all_pred,
-            target_names=class_names,
-            zero_division=0
-        )
+        all_true,
+        all_pred,
+        target_names=class_names,
+        zero_division=0
+    )
 
     with open(os.path.join(result_path, "classification_report_nn.txt"), "w") as f:
-            f.write(report_text)
+        f.write(report_text)
 
     report_df_hyb = pd.DataFrame(
         classification_report(
@@ -276,37 +310,73 @@ def evaluate_and_visualize_single_head(
     ).transpose()
 
     report_df_hyb.to_csv(os.path.join(result_path, "classification_report_hybrid.csv"))
+
     report_text = classification_report(
-            all_true,
-            hybrid_pred_np,
-            target_names=class_names,
-            zero_division=0
-        )
+        all_true,
+        hybrid_pred_np,
+        target_names=class_names,
+        zero_division=0
+    )
 
     with open(os.path.join(result_path, "classification_report_hybrid.txt"), "w") as f:
-            f.write(report_text)
+        f.write(report_text)
 
-    # --- FALLBACK DEBUG ---
-    fallback_indices = [i for i, conf in enumerate(all_dominant_probs) if conf < adaptive_threshold]
+    # ------------------------------------------------------------------ #
+    #  Fallback debug output                                              #
+    # ------------------------------------------------------------------ #
+    fallback_indices = [
+        i for i, conf in enumerate(all_dominant_probs)
+        if conf < adaptive_threshold
+    ]
+
     for i in fallback_indices:
         if not secondary_model:
             continue
 
         nn_pred = all_pred[i]
         true = all_true[i]
-        nn_conf = all_dominant_probs[i]          # ✅ FIX
+        nn_conf = all_dominant_probs[i]
 
         dt_pred = all_dt_pred[i]
         dt_conf = all_dt_confidence[i]
-        dt_probs = all_dt_prob_vectors[i]        # ✅ FIX
+        dt_probs = all_dt_prob_vectors[i]
 
-        # --- status logic (you NEED this) ---
-        if nn_pred != true and dt_pred == true:
-            status = "✅ FIXED by XGB"
+        use_xgb, decision = hybrid_decision(
+            nn_pred, nn_conf, dt_pred, dt_conf, adaptive_threshold
+        )
 
-        elif nn_pred == true and dt_pred != true:
-            status = "❌ BROKEN by XGB"
+        delta = dt_conf - nn_conf
+        sign = "+" if delta >= 0 else ""
 
+        # status: only meaningful when an override was (or would be) attempted
+        if use_xgb:
+            status = "\u2705 FIX" if dt_pred == true else "\u274c BREAK"
+        else:
+            status = None
+
+        print(f"[{i}]")
+        print(f"NN={nn_pred} ({nn_conf:.3f})")
+        print(f"{secondary_type.upper()}={dt_pred} ({dt_conf:.3f})")
+        print(f"\u0394={sign}{delta:.3f}")
+        print(f"Decision={decision}")
+        if status is not None:
+            print(f"Status={status}")
+        print(
+            f"   {secondary_type.upper()} probs: {np.round(dt_probs, 4)}"
+        )
+        print()
+
+        # collect images where the secondary model hurts or both agree wrongly
+        if nn_pred == true and dt_pred != true:
+            misclassified_secondary.append({
+                "image": all_images[i],
+                "img_path": all_img_paths[i],
+                "true": true,
+                "pred": dt_pred,
+                "prob_pred": dt_conf,
+                "coords": all_coords_list[i]
+            })
+        elif nn_pred == dt_pred and nn_pred != true:
             misclassified_secondary.append({
                 "image": all_images[i],
                 "img_path": all_img_paths[i],
@@ -316,42 +386,32 @@ def evaluate_and_visualize_single_head(
                 "coords": all_coords_list[i]
             })
 
-        elif nn_pred == dt_pred:
-            if nn_pred == true:
-                status = "✔ both correct"
-            else:
-                status = "✖ both wrong"
+    # ------------------------------------------------------------------ #
+    #  Hybrid statistics                                                  #
+    # ------------------------------------------------------------------ #
+    fallback_count = sum(
+        info["nn_conf"] < adaptive_threshold for info in secondary_info
+    )
 
-                misclassified_secondary.append({
-                    "image": all_images[i],
-                    "img_path": all_img_paths[i],
-                    "true": true,
-                    "pred": dt_pred,
-                    "prob_pred": dt_conf,
-                    "coords": all_coords_list[i]
-                })
-        else:
-            status = "⚠ disagreement"
+    override_deltas_arr = np.array(override_deltas) if override_deltas else np.array([])
 
-        # --- PRINT ---
-        print(
-            f"[{i}] "
-            f"NN: {nn_pred} ({nn_conf:.3f}) | "
-            f"{secondary_type.upper()}: {dt_pred} ({dt_conf:.3f}) | "
-            f"TRUE={true} | {status}\n"
-            f"   {secondary_type.upper()} probs: {np.round(dt_probs, 4)}"
-        )
-        
-        print("=== HYBRID ANALYSIS ===")
-        print(f"Fallback samples: {sum(info['nn_conf'] < adaptive_threshold for info in secondary_info)}")
-        print(f"XGB actually used: {secondary_used}")
-        print(f"Agreement cases: {agreement_cases}")
-        if secondary_used > 0:
-            print(f"XGB precision (when used): {secondary_correct / secondary_used:.4f}")
-        print(f"Fixes (XGB corrected NN): {secondary_correct}")
-        print(f"Breaks (XGB ruined NN): {secondary_failed}")
-        if (secondary_correct + secondary_failed) > 0:
-            print(f"Net gain: {secondary_correct - secondary_failed}")
+    print("=== HYBRID ANALYSIS ===")
+    print(f"Adaptive threshold:        {adaptive_threshold:.4f}")
+    print(f"Fallback samples:          {fallback_count}")
+    print(f"Override count:            {secondary_used}")
+    print(f"Agreement rejections:      {reject_agreement}")
+    print(f"Low confidence rejections: {reject_low_confidence}")
+    print(f"Margin rejections:         {reject_small_margin}")
+    if secondary_used > 0:
+        print(f"Override precision:        {successful_overrides / secondary_used:.4f}")
+    print(f"Successful overrides:      {successful_overrides}")
+    print(f"Failed overrides:          {failed_overrides}")
+    print(f"Net gain:                  {successful_overrides - failed_overrides}")
+    if len(override_deltas_arr) > 0:
+        print(f"Mean delta:                {np.mean(override_deltas_arr):.4f}")
+        print(f"Median delta:              {np.median(override_deltas_arr):.4f}")
+        print(f"Min delta:                 {np.min(override_deltas_arr):.4f}")
+        print(f"Max delta:                 {np.max(override_deltas_arr):.4f}")
 
     return (
         misclassified_nn,
@@ -365,6 +425,8 @@ def evaluate_and_visualize_single_head(
         hybrid_accuracy,
         misclassified_secondary
     )
+
+    
 def perform_all_patches_corrections(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
     for coords, prob, img_path, pred, true in zip(all_coords, all_dominant_probs, all_eval_paths, all_pred, all_true):
         print(prob)

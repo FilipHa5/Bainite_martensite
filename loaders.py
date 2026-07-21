@@ -195,10 +195,11 @@ def make_cv_loaders_from_samples(
     stride=64,
     lbp_settings=[(1, 8), (3, 16)],
     num_workers=4,
+    seed=42
 ):
     y_family = np.array([s[1] for s in samples])
 
-    kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    kf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
     for fold, (train_idx, val_idx) in enumerate(kf.split(samples, y_family)):
 

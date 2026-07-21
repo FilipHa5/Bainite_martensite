@@ -124,7 +124,7 @@ def build_dt_model():
     )
     return clf
 
-def build_xgb_model(scale_pos_weight=1.0):
+def build_xgb_model(scale_pos_weight=1.0, seed=42):
     model = XGBClassifier(
         n_estimators=300,
         max_depth=6,
@@ -139,7 +139,7 @@ def build_xgb_model(scale_pos_weight=1.0):
         gpu_id=0,
 
         scale_pos_weight=scale_pos_weight,
-        random_state=42,
+        random_state=seed,
         n_jobs=-1
     )
 
@@ -163,7 +163,7 @@ def train_dt_model(train_loader, val_loader, bins=128):
 
     return clf, val_acc
 
-def train_xgb_model(train_loader, val_loader, bins=128):
+def train_xgb_model(train_loader, val_loader, bins=128, seed=42):
     device = "cpu"
 
     X_train, y_train = loader_to_numpy(train_loader, device, bins)
@@ -174,7 +174,7 @@ def train_xgb_model(train_loader, val_loader, bins=128):
     neg = np.sum(y_train == 0)
     scale_pos_weight = neg / pos if pos > 0 else 1
 
-    clf = build_xgb_model(scale_pos_weight)
+    clf = build_xgb_model(scale_pos_weight, seed=seed)
 
     clf.fit(
         X_train,
