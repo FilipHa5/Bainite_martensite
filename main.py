@@ -25,7 +25,7 @@ EPOCHS = 100
 OUTER_SPLITS = 4
 INNER_SPLITS = 3
 
-SEEDS = range(12)
+SEEDS = range(24)
 
 
 # =====================================================
@@ -55,7 +55,7 @@ def build_dt():
 # =====================================================
 
 def create_result_path_and_save_params(results_dir):
-    tracker = StoreParams()
+    tracker = StoreParams(base_dir=results_dir)
     tracker.add("batch_size", BATCH_SIZE)
     tracker.add("patch_size", PATCH_SIZE)
     tracker.add("stride", STRIDE)
@@ -63,7 +63,7 @@ def create_result_path_and_save_params(results_dir):
     tracker.add("epochs", EPOCHS)
     tracker.add("seed", seed)
 
-    return tracker, dir
+    return tracker, tracker.get_dir()
 
 
 def run_fold(fold, result_path, device, seed, secondary_type="dt"):

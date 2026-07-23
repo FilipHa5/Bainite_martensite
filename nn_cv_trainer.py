@@ -7,14 +7,17 @@ from torch import nn
 from datasets import MicrostructurePatchDataset
 from train import train_single_val, train_full
 from evaluation import (
+    evaluate_and_visualize_single_head,
+    compute_hybrid_predictions,
+    compute_hybrid_accuracy,
+)
+from visualization import (
                     plot_misclassified,
                     create_heatmaps_per_image,
-                    evaluate_and_visualize_single_head,
                     plot_misclassified_with_heatmap,
                     create_misclassification_density_maps,
                     create_per_class_error_maps,
                     create_uncertainty_maps,
-                    perform_all_patches_corrections
                 )
 from plot_training import plot_training_history
 import numpy as np
@@ -47,6 +50,9 @@ def run_outer_fold(
             "lr": [1e-3],
             "weight_decay": [1e-4],
             "bins": [16],
+            "confidence_margin": [0.05, 0.10, 0.15, 0.20],
+            "min_conf_threshold": [0.60, 0.70, 0.80, 0.90, 0.95, 0.97],
+            "min_secondary_confidence": [None, 0.50, 0.60, 0.70, 0.80],
             # "lr": [1e-3, 1e-4],
             # "weight_decay": [0, 1e-4, 1e-3],
             # "bins": [16, 128, 256],
@@ -80,19 +86,18 @@ def run_outer_fold(
     best_params_nn = {}
     best_params_dt = {}
 
-    # 👇 Now paste ALL your inner loops + final training here
-    # (exactly as you had inside the original for loop)
-
-
     # -------------------------
     # INNER LOOP for NN
     # -------------------------
+    best_inner_fold_data = []
+
     for lr, wd in product(param_grid["lr"], param_grid["weight_decay"]):
         print(f"Inner loop NN, LR: {lr}, WD: {wd}")
         inner_scores_nn = []
         inner_scores_secondary = []
         inner_best_epochs = []
         inner_best_epochs_secondary = []
+        fold_data = []
 
         for _, train_loader, val_loader in make_cv_loaders_from_samples(
             trainval_samples,
@@ -120,9 +125,10 @@ def run_outer_fold(
             score = max(history["val_acc"])
             inner_scores_nn.append(score)
             
+            sec_model = None
             if secondary_type == "cnn":
-                secondary_model = build_secondary_model().to(device)
-                secondary_model, history = train_single_val(
+                sec_model = build_secondary_model().to(device)
+                sec_model, history = train_single_val(
                     nn_model,
                     optimizer,
                     criterion,
@@ -140,6 +146,7 @@ def run_outer_fold(
 
             best_epoch_fold = np.argmax(history["val_acc"]) + 1
             inner_best_epochs.append(best_epoch_fold)
+            fold_data.append((model, sec_model, val_loader))
 
         mean_score_nn = np.mean(inner_scores_nn)
         med_epoch_nn = int(np.median(inner_best_epochs))
@@ -155,14 +162,18 @@ def run_outer_fold(
                 "epochs": med_epoch_nn,
                 "secondary_epochs" : med_epoch_secondary_nn
             }
+            best_inner_fold_data = fold_data
 
     # -------------------------
     # INNER LOOP for DT
     # -------------------------
+    best_xgb_fold_data = []
+
     if secondary_type=="xgb":
         for bins in param_grid["bins"]:
             print("Inner loop, DT bins", bins)
             inner_scores_dt = []
+            fold_data = []
 
             for _, train_loader, val_loader in make_cv_loaders_from_samples(
                 trainval_samples,
@@ -176,14 +187,56 @@ def run_outer_fold(
 
                 secondary_model, score_dt = train_xgb_model(train_loader, val_loader, bins, seed=seed)
                 inner_scores_dt.append(score_dt)
+                fold_data.append((secondary_model, val_loader))
 
             mean_score_dt = np.mean(inner_scores_dt)
             if mean_score_dt > best_score_dt:
                 best_score_dt = mean_score_dt
                 best_params_dt = {"bins": bins}
+                best_xgb_fold_data = fold_data
 
         print("Best inner hyperparams NN:", best_params_nn)
-        print("Best inner hyperparams DT:", best_params_dt, "accuracy score: ", score_dt)
+        print("Best inner hyperparams DT:", best_params_dt, "accuracy score: ", best_score_dt)
+
+    # -------------------------
+    # COLLECT PREDICTIONS & TUNE HYBRID PARAMS
+    # -------------------------
+    best_fold_predictions = []
+
+    if secondary_type == "xgb":
+        for i, (xgb_model, _) in enumerate(best_xgb_fold_data):
+            nn_model, _, val_loader = best_inner_fold_data[i]
+            preds = compute_hybrid_predictions(
+                nn_model, val_loader, device, xgb_model, "xgb"
+            )
+            best_fold_predictions.append(preds)
+    else:
+        for nn_model, sec_model, val_loader in best_inner_fold_data:
+            preds = compute_hybrid_predictions(
+                nn_model, val_loader, device, sec_model, secondary_type
+            )
+            best_fold_predictions.append(preds)
+
+    best_hybrid_score = -np.inf
+    best_hybrid_params = {"confidence_margin": 0.15, "min_conf_threshold": 10, "min_secondary_confidence": None}
+
+    for margin, threshold_pct, min_sec_conf in product(
+        param_grid["confidence_margin"], param_grid["min_conf_threshold"], param_grid["min_secondary_confidence"]
+    ):
+        scores = [
+            compute_hybrid_accuracy(p, margin, threshold_pct, min_sec_conf)
+            for p in best_fold_predictions
+        ]
+        mean_score = np.mean(scores)
+        if mean_score > best_hybrid_score:
+            best_hybrid_score = mean_score
+            best_hybrid_params = {
+                "confidence_margin": margin,
+                "min_conf_threshold": threshold_pct,
+                "min_secondary_confidence": min_sec_conf,
+            }
+
+    print("Best hybrid params:", best_hybrid_params, "hybrid accuracy:", best_hybrid_score)
 
     # -------------------------
     # FINAL TRAIN ON FULL TRAINVAL
@@ -234,6 +287,9 @@ def run_outer_fold(
         secondary_model=secondary_model,
         secondary_type=secondary_type,
         min_confidence_threshold=0.8,
+        confidence_margin=best_hybrid_params["confidence_margin"],
+        min_conf_threshold=best_hybrid_params["min_conf_threshold"],
+        min_secondary_confidence=best_hybrid_params["min_secondary_confidence"],
     )
     
     plot_misclassified_with_heatmap(result_path, misclassified, sigma=2, alpha=0.3)

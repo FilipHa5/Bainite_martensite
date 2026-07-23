@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from scipy.stats import ttest_rel
 
-LOG_DIR = Path("ttest2")
+LOG_DIR = Path("tuned_thr")
 
 patterns = {
     "NN": re.compile(r"Outer test score NN:\s*([0-9.]+)"),

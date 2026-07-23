@@ -14,6 +14,9 @@ class StoreParams:
         self._auto_save = auto_save
         self._base_dir = base_dir
 
+    def get_dir(self):
+        return self._base_dir
+
     def add(self, key, value):
         self._params[key] = value
         if self._auto_save:

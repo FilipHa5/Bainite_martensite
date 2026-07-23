@@ -3,7 +3,7 @@ import re
 import pandas as pd
 from statsmodels.stats.contingency_tables import mcnemar
 
-LOG_DIR = Path("ttest2")
+LOG_DIR = Path("tuned_thr")
 
 # Match each sample block
 sample_pattern = re.compile(
