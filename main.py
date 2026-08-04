@@ -54,8 +54,9 @@ def build_dt():
 # Utilities
 # =====================================================
 
-def create_result_path_and_save_params(results_dir):
-    tracker = StoreParams(base_dir=results_dir)
+def create_result_path_and_save_params(results_dir, seed):
+    base_dir = os.path.join(results_dir, f"seed_{seed}")
+    tracker = StoreParams(base_dir=base_dir)
     tracker.add("batch_size", BATCH_SIZE)
     tracker.add("patch_size", PATCH_SIZE)
     tracker.add("stride", STRIDE)
@@ -121,7 +122,7 @@ def main(seed, args):
     print(f"\n========== Seed {seed} ==========")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    param_tracker, result_path = create_result_path_and_save_params(args.results)
+    param_tracker, result_path = create_result_path_and_save_params(args.results, seed)
 
     print("Using device:", device)
 

@@ -60,7 +60,7 @@ def run_outer_fold(
 
     print(f"\n========== OUTER FOLD {outer_fold} ==========")
 
-    result_path = f"{result_path}_OF_{outer_fold}"
+    result_path = os.path.join(result_path, f"OF_{outer_fold}")
     os.makedirs(result_path, exist_ok=True)
 
     # ✅ Load data inside function

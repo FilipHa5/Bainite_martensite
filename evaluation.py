@@ -1,4 +1,5 @@
 import os
+import json
 
 import numpy as np
 import pandas as pd
@@ -221,11 +222,28 @@ def evaluate_and_visualize_single_head(
     brier_secondary = brier_score_loss(np.array(all_true), np.array(all_dt_prob_vectors)[:, 1])
     print(f"Brier score secondary: {brier_secondary}")
 
-    ece_nn = expected_calibration_error(all_true, np.array(all_prob_vectors), n_bins=15)
+    ece_nn = expected_calibration_error(
+        all_true, np.array(all_prob_vectors), n_bins=15, results_path=result_path, prefix="primary"
+    )
     print(f"ECE NN: {ece_nn}")
 
-    ece_secondary = expected_calibration_error(all_true, np.array(all_dt_prob_vectors), n_bins=15)
-    print(f"ECE NN: {ece_secondary}")
+    ece_secondary = expected_calibration_error(
+        all_true, np.array(all_dt_prob_vectors), n_bins=15, results_path=result_path, prefix="secondary"
+    )
+    print(f"ECE Secondary: {ece_secondary}")
+
+    with open(os.path.join(result_path, "calibration_metrics.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "brier_primary": brier_nn,
+                "brier_secondary": brier_secondary,
+                "ece_primary": ece_nn,
+                "ece_secondary": ece_secondary,
+            },
+            f,
+            indent=4,
+            default=str,
+        )
 
     # primary
     reliability_diagram(all_true, np.array(all_prob_vectors), result_path)
